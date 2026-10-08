@@ -1,0 +1,13 @@
+# 精听工具 依赖
+# Python 3.9+
+
+# 本地语音识别（转写）
+faster-whisper>=1.0.0
+
+# 桌面窗口（WebView2 外壳）
+pywebview>=5.0
+
+# 音频切分（ffmpeg 二进制需另行准备，见 README）
+# 通过 AnkiConnect 与 Anki 通信，无需 anki 库；
+# 若要用「直接写数据库」模式，取消下面注释：
+# anki>=2.1.50
