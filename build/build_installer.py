@@ -125,7 +125,8 @@ def main():
     t = t.replace("__OUTNAME__", outname)
     t = t.replace("__BUILDDIR__", esc(BUILDDIR))
     t = t.replace("__ICON__", esc(icon) if icon else "")
-    # 文档从仓库根取
+    # 文档与协议从仓库根取（用绝对路径，避免 ISCC 工作目录不同导致找不到）
+    t = t.replace("__LICENSE__", esc(os.path.join(ROOT, "LICENSE")))
     t = t.replace('Source: "README.md"',
                   'Source: "%s"' % esc(os.path.join(ROOT, "README.md")))
     t = t.replace('Source: "使用说明.md"',
