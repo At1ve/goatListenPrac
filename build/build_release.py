@@ -20,12 +20,10 @@ import zipfile
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-# 脚本在 build/ 下，仓库根是上一级
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-DIST = os.path.join(ROOT, "dist")
-PKG = "goatListenPrac"
-VERSION = "1.0.0"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import ROOT, DIST, NAME, VERSION   # noqa: E402
+
+PKG = NAME
 
 # 应该出现在仓库里的文件（用于自检）
 EXPECT = [

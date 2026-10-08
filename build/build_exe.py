@@ -22,12 +22,8 @@ import subprocess
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)                       # 仓库根
-DIST = os.path.join(ROOT, "dist")                  # 产物目录
-BUILD = os.path.join(DIST, "exe")                  # exe 输出
-WORK = os.path.join(DIST, "_pyi")                  # PyInstaller 中间文件
-NAME = "goatListenPrac"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import ROOT, DIST, BUILD, WORK, NAME   # noqa: E402
 
 
 def log(m):

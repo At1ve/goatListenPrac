@@ -19,13 +19,10 @@ import subprocess
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-DIST = os.path.join(ROOT, "dist")
-BUILDDIR = os.path.join(DIST, "exe", "goatListenPrac")
-TEMPLATE = os.path.join(HERE, "installer.iss")
-VERSION = "1.0.0"
-NAME = "goatListenPrac"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import ROOT, DIST, EXEDIR as BUILDDIR, NAME, VERSION  # noqa: E402
+
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "installer.iss")
 
 ISCC_CANDIDATES = [
     r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
