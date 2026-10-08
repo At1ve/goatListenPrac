@@ -20,15 +20,13 @@ def pick_audio_file(title="选择音频文件", initialdir=None):
     """
     import os as _os
     if initialdir is None:
-        # 默认打开 mp3s 目录（打包后是 exe 所在目录下的 mp3s）
+        # 默认打开 mp3s 目录（运行目录下的）
         try:
             import core
-            base = core.ROOT
+            base = core.MEDIA_DIR_MP3S
         except Exception:
-            base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        initialdir = _os.path.join(base, "mp3s")
-        if not _os.path.isdir(initialdir):
-            initialdir = _os.path.expanduser("~")
+            base = _os.path.expanduser("~")
+        initialdir = base if _os.path.isdir(base) else _os.path.expanduser("~")
 
     result = {"path": None}
 

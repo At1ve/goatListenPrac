@@ -16,19 +16,49 @@ import subprocess
 from datetime import datetime
 
 
-def _resolve_root():
-    """
-    确定"工作目录"（用户数据放这里）。
+def _exe_dir():
+    """打包运行时，exe 所在目录"""
+    return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else None
 
-    打包成 exe 后，__file__ 指向 PyInstaller 解压的临时目录，
-    数据写在那里会在退出时被清掉。所以：
 
-      · 打包运行（frozen）→ 用 exe 所在目录
-      · 源码运行           → 用项目根目录（src 的上一级）
-    """
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+def _src_parent():
+    """源码运行时，src 的上一级"""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_runtime():
+    """
+    确定"运行目录"—— mp3s / marks / transcript / cards 等用户数据放这里。
+
+    查找顺序：
+      1. 环境变量 JINGTING_RUNTIME（方便自定义）
+      2. exe 所在目录（打包安装后，数据就在安装目录里）
+      3. 源码目录外层的 runtime/（开发时的布局：eng/runtime/）
+      4. 源码目录本身（直接 clone 下来跑时的默认位置）
+
+    这样开发时源码仓库能保持干净，数据放在仓库外面。
+    """
+    env = os.environ.get("JINGTING_RUNTIME")
+    if env and os.path.isdir(env):
+        return env
+
+    exe = _exe_dir()
+    if exe:
+        return exe
+
+    src = _src_parent()                       # …/goatListenPrac
+    outer = os.path.dirname(src)              # …/eng
+    rt = os.path.join(outer, "runtime")
+    if os.path.isdir(rt):
+        return rt
+    return src
+
+
+def _resolve_root():
+    """运行目录（用户数据）"""
+    root = _resolve_runtime()
+    os.makedirs(root, exist_ok=True) if not os.path.isdir(root) else None
+    return root
 
 
 def _resolve_web():
@@ -36,10 +66,13 @@ def _resolve_web():
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
         return os.path.join(base, "web")
-    return os.path.join(ROOT, "web")
+    return os.path.join(_src_parent(), "web")
 
 
-ROOT = _resolve_root()
+# 项目目录（源码 / 安装目录），ffmpeg 等依赖在这里找
+PROJECT_DIR = _exe_dir() or _src_parent()
+# 运行目录（用户数据）
+ROOT = _resolve_runtime()
 WEB_DIR = _resolve_web()
 
 TRANSCRIPT_DIR = os.path.join(ROOT, "transcript")
@@ -47,20 +80,36 @@ CARDS_DIR = os.path.join(ROOT, "cards")
 MARKS_DIR = os.path.join(ROOT, "marks")
 MEDIA_DIR_MP3S = os.path.join(ROOT, "mp3s")
 TRANS_DIR = os.path.join(ROOT, "trans_cache")
+STATE_FILE = os.path.join(ROOT, "ui_state.json")
 
 MODEL_NAME = "听力音频卡"
 DECK_NAME = "英语听力::02-音频卡片"
 
 
-
 def _find_ffmpeg():
-    """定位 ffmpeg：优先项目内，其次 PATH"""
-    local = os.path.join(ROOT, "ffmpeg", "bin",
-                         "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
-    if os.path.exists(local):
-        return local
+    """
+    定位 ffmpeg。
+
+    ffmpeg 属于"程序依赖"而非"用户数据"，查找顺序：
+      1. PROJECT_DIR/ffmpeg/bin      安装目录 或 源码仓库目录
+      2. <PROJECT_DIR>/../ffmpeg/bin 开发时放在仓库外层（不污染仓库）
+      3. ROOT/ffmpeg/bin             运行数据目录
+      4. 系统 PATH
+    """
+    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    cands = [
+        os.path.join(PROJECT_DIR, "ffmpeg", "bin", exe),
+        os.path.join(os.path.dirname(PROJECT_DIR), "ffmpeg", "bin", exe),
+        os.path.join(ROOT, "ffmpeg", "bin", exe),
+    ]
+    for p in cands:
+        if os.path.exists(p):
+            return p
     import shutil as _sh
-    return _sh.which("ffmpeg") or local
+    found = _sh.which("ffmpeg")
+    if found:
+        return found
+    return cands[0]
 
 
 FFMPEG = _find_ffmpeg()
@@ -170,15 +219,14 @@ MARK_TYPES = {
 
 
 def ensure_dirs():
-    for d in (TRANSCRIPT_DIR, CARDS_DIR, MARKS_DIR):
+    for d in (TRANSCRIPT_DIR, CARDS_DIR, MARKS_DIR, MEDIA_DIR_MP3S, TRANS_DIR):
         os.makedirs(d, exist_ok=True)
 
 
 # ---------------------------------------------------------------- 界面设置
 # 不依赖浏览器 localStorage（WebView2 下可能被禁用 / 不持久），
-# 改为存在项目目录里的 JSON 文件，用户也能直接查看和修改。
-
-STATE_FILE = os.path.join(ROOT, "ui_state.json")
+# 改为存在运行目录里的 JSON 文件，用户也能直接查看和修改。
+# STATE_FILE 已在文件开头按 ROOT 计算好。
 
 
 def load_ui_state():

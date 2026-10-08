@@ -178,23 +178,60 @@ Anki → 工具 → 插件 → 获取插件 → 输入 2055492159 → 重启 Ank
 
 ## 目录结构
 
+### 仓库内容
+
 ```
-jingting/
-├── src/
-│   ├── app.py              程序入口 + 本地 HTTP 服务
-│   ├── core.py             核心逻辑（转写/切句/制卡/翻译）
-│   ├── resplit.py          按句子边界重切
-│   ├── filedialog_win.py   原生文件对话框
-│   └── check_js.py         前端语法检查
+goatListenPrac/
+├── src/                        源码
+│   ├── app.py                  程序入口 + 本地 HTTP 服务
+│   ├── core.py                 核心逻辑（转写/切句/制卡/翻译/路径）
+│   ├── resplit.py              按句子边界重新切分
+│   ├── filedialog_win.py       原生文件对话框
+│   ├── clear_deck.py           清空 Anki 牌组
+│   └── check_js.py             前端语法检查
 ├── web/
-│   └── index.html          界面（单文件）
-├── mp3s/                   音频材料
-├── transcript/             转写产物（自动生成）
-├── marks/                  标记数据（自动生成）
-├── cards/                  卡片产物（自动生成）
-├── 启动.bat
-└── requirements.txt
+│   └── index.html              界面（单文件，无依赖）
+├── build/                      构建脚本
+│   ├── build_release.py        自检 + 打包源码
+│   ├── build_exe.py            打包成 exe（PyInstaller）
+│   ├── build_installer.py      生成安装包（Inno Setup）
+│   └── installer.iss           安装包脚本
+├── README.md  使用说明.md  LICENSE
+├── requirements.txt  setup.py
+└── 启动.bat  安装.bat
 ```
+
+### 运行时的数据放哪
+
+**用户数据默认放在仓库外面**，这样仓库始终保持干净：
+
+```
+你的工作目录/
+├── goatListenPrac/         ← git clone 下来的仓库
+├── runtime/                ← 自动生成：mp3s / marks / transcript / cards
+└── ffmpeg/                 ← setup.py 自动下载
+```
+
+如果 `runtime/` 不存在，程序会退回用仓库目录本身（不影响使用）。
+
+想自定义位置就设环境变量 `JINGTING_RUNTIME`。
+
+---
+
+## 从源码构建
+
+```bash
+# 1. 打包成 exe（需要 pip install pyinstaller）
+python build/build_exe.py
+
+# 2. 生成安装包（需要 Inno Setup 6）
+python build/build_installer.py
+
+# 3. 只检查和打包源码
+python build/build_release.py
+```
+
+产物都在 `dist/` 下，不会污染仓库。
 
 ---
 
@@ -202,6 +239,9 @@ jingting/
 
 | 变量 | 说明 |
 |---|---|
+| `JINGTING_RUNTIME` | 用户数据目录，默认 `<仓库同级>/runtime` |
+| `ANKI_COLLECTION` | Anki 数据库完整路径（自动探测失败时用）|
+| `ANKI_BASE` | Anki 数据根目录 |
 | `ANKI_CONNECT_URL` | AnkiConnect 地址，默认 `http://127.0.0.1:8765` |
 
 ---
