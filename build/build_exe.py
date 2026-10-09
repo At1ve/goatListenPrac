@@ -43,12 +43,43 @@ def write_spec():
     """生成 PyInstaller spec（放在 dist/ 下，不污染仓库）"""
     spec = '''# -*- mode: python ; coding: utf-8 -*-
 import os
+from PyInstaller.utils.hooks import (collect_data_files, collect_dynamic_libs,
+                                     collect_all)
 
 ROOT = r"%s"
 
+# ---------------------------------------------------------------
+# 数据文件收集
+#
+# 关键坑：PyInstaller 只收集 Python 代码，不会自动带上包内的非代码
+# 文件。faster_whisper 的 VAD 模型 silero_vad_v6.onnx 就是这样漏掉的，
+# 结果运行时抛 ONNXRuntimeError: NO_SUCHFILE，导入音频直接失败。
+#
+# 另一个坑：collect_data_files 会把资源放进 faster_whisper/assets/，
+# 但代码在 PYZ 归档里，导致生成一个没有 __init__.py 的目录 —— 它会
+# 把 PYZ 里的同名模块"遮住"，import 反而坏掉。
+# 所以这里对 faster_whisper 用 collect_all，把代码和数据一起落盘。
+# ---------------------------------------------------------------
 datas = [
     (os.path.join(ROOT, "web"), "web"),
 ]
+
+# faster_whisper：代码 + 资源一起收集（避免目录遮住 PYZ）
+datas += collect_all("faster_whisper")[0]      # datas
+binaries = collect_all("faster_whisper")[1]    # binaries
+hiddenimports_extra = collect_all("faster_whisper")[2]
+
+for pkg in ("ctranslate2", "onnxruntime", "tokenizers", "huggingface_hub"):
+    try:
+        datas += collect_data_files(pkg)
+    except Exception:
+        pass
+
+for pkg in ("ctranslate2", "onnxruntime", "av"):
+    try:
+        binaries += collect_dynamic_libs(pkg)
+    except Exception:
+        pass
 
 hiddenimports = [
     "faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
@@ -56,7 +87,7 @@ hiddenimports = [
     "clr_loader", "pythonnet", "tkinter", "tkinter.filedialog", "bottle",
     # 项目自己的模块：app.py 里是运行时 import，静态分析扫不到
     "core", "filedialog_win", "resplit", "clear_deck",
-]
+] + list(hiddenimports_extra)
 
 # 排除用不到的大块头，显著减小体积
 excludes = [
@@ -71,7 +102,7 @@ excludes = [
 a = Analysis(
     [os.path.join(ROOT, "src", "app.py")],
     pathex=[os.path.join(ROOT, "src")],
-    binaries=[], datas=datas,
+    binaries=binaries, datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=excludes,
