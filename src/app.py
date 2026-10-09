@@ -423,6 +423,15 @@ def _preflight():
 
 
 def main():
+    # 快捷方式参数：--open-data 只打开数据目录，不启动界面
+    if "--open-data" in sys.argv:
+        core.ensure_dirs()
+        try:
+            os.startfile(core.ROOT)
+        except Exception as e:
+            print("无法打开目录:", e)
+        return 0
+
     try:
         log("=" * 50)
         log("精听工具启动")

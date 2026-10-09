@@ -26,21 +26,74 @@ def _src_parent():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _read_install_ini():
+    """
+    读安装时写入的 install.ini，取出用户选的数据目录。
+
+    安装包会让用户单独指定数据目录（音频可能很大，不该塞在程序目录里），
+    路径存在这里。格式：
+        [paths]
+        data_dir=D:\\goatListenPrac
+
+    注意编码：Inno Setup 的 SetIniString 在中文路径下写的是 ANSI(GBK)，
+    不是 UTF-8，所以这里要依次尝试多种编码。
+    """
+    base = _exe_dir()
+    if not base:
+        return None
+    p = os.path.join(base, "install.ini")
+    if not os.path.exists(p):
+        return None
+
+    raw = None
+    for enc in ("utf-8-sig", "gbk", "mbcs", "latin-1"):
+        try:
+            raw = open(p, encoding=enc).read()
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+        except Exception:
+            break
+    if raw is None:
+        return None
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("[", ";", "#")):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip().lower() in ("data_dir", "datadir"):
+            v = v.strip().strip('"')
+            if v and os.path.isdir(v):
+                return v
+            # 目录还不存在也不要紧 —— 用它的父目录判断合法性
+            if v and os.path.isdir(os.path.dirname(v)):
+                return v
+    return None
+
+
 def _resolve_runtime():
     """
     确定"运行目录"—— mp3s / marks / transcript / cards 等用户数据放这里。
 
     查找顺序：
       1. 环境变量 JINGTING_RUNTIME（方便自定义）
-      2. exe 所在目录（打包安装后，数据就在安装目录里）
-      3. 源码目录外层的 runtime/（开发时的布局：eng/runtime/）
-      4. 源码目录本身（直接 clone 下来跑时的默认位置）
+      2. exe 同级的 install.ini 里写的 data_dir（安装时用户选的）
+      3. exe 所在目录（绿色版 / 未写 ini 时）
+      4. 源码目录外层的 runtime/（开发时的布局）
+      5. 源码目录本身（直接 clone 下来跑时的默认位置）
 
     这样开发时源码仓库能保持干净，数据放在仓库外面。
     """
     env = os.environ.get("JINGTING_RUNTIME")
     if env and os.path.isdir(env):
         return env
+
+    ini = _read_install_ini()
+    if ini:
+        return ini
 
     exe = _exe_dir()
     if exe:

@@ -123,13 +123,9 @@ def main():
     t = t.replace("__BUILDDIR__", esc(BUILDDIR))
     t = t.replace("__ICON__", esc(icon) if icon else "")
     # 文档与协议从仓库根取（用绝对路径，避免 ISCC 工作目录不同导致找不到）
+    # 注意：Inno 的字符串里反斜杠要写两遍，所以这里必须用 esc()
     t = t.replace("__LICENSE__", esc(os.path.join(ROOT, "LICENSE")))
-    t = t.replace('Source: "README.md"',
-                  'Source: "%s"' % esc(os.path.join(ROOT, "README.md")))
-    t = t.replace('Source: "使用说明.md"',
-                  'Source: "%s"' % esc(os.path.join(ROOT, "使用说明.md")))
-    t = t.replace('Source: "LICENSE"',
-                  'Source: "%s"' % esc(os.path.join(ROOT, "LICENSE")))
+    t = t.replace("__ROOT__", esc(ROOT))
 
     tmp = os.path.join(DIST, "_installer_build.iss")
     with open(tmp, "w", encoding="utf-8-sig") as fp:
