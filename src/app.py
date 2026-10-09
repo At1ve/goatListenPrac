@@ -233,13 +233,17 @@ class Api:
         try:
             import filedialog_win
         except Exception as e:
-            return {"ok": False, "reason": f"无法加载文件对话框模块：{e}"}
+            log("加载 filedialog_win 失败: " + str(e))
+            return {"ok": False, "reason": "无法加载文件对话框模块：%s" % e}
 
-        initial = os.path.join(core.ROOT, "mp3s")
+        initial = core.MEDIA_DIR_MP3S
         r = filedialog_win.pick_audio_file(initialdir=initial)
 
         if r.get("error"):
-            return {"ok": False, "reason": f"对话框出错：{r['error']}"}
+            log("文件对话框出错: " + str(r["error"]))
+            return {"ok": False,
+                    "reason": "无法打开文件对话框：%s\n"
+                              "可以改用「粘贴路径」按钮手动输入" % r["error"]}
         if not r.get("path"):
             return {"ok": False, "reason": "cancelled"}
         return {"ok": True, "path": r["path"],

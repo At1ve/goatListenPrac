@@ -54,6 +54,8 @@ hiddenimports = [
     "faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
     "onnxruntime", "av", "webview", "webview.platforms.edgechromium",
     "clr_loader", "pythonnet", "tkinter", "tkinter.filedialog", "bottle",
+    # 项目自己的模块：app.py 里是运行时 import，静态分析扫不到
+    "core", "filedialog_win", "resplit", "clear_deck",
 ]
 
 # 排除用不到的大块头，显著减小体积
