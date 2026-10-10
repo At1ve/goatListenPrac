@@ -63,7 +63,6 @@ ROOT = r"%s"
 datas = [
     (os.path.join(ROOT, "web"), "web"),
 ]
-
 # faster_whisper：代码 + 资源一起收集（避免目录遮住 PYZ）
 datas += collect_all("faster_whisper")[0]      # datas
 binaries = collect_all("faster_whisper")[1]    # binaries
@@ -149,6 +148,51 @@ def clean_artifacts(outdir):
     return removed
 
 
+def stage_assets(outdir):
+    """
+    把「装完即用」需要的资源放进程序目录：
+      models/faster-whisper-small/  语音识别模型（约 464MB）
+      dict/                         本地词典（离线查词）
+
+    放在 _internal 外面，方便用户看到和替换。
+    """
+    log("\n  准备内置资源")
+    assets = os.path.join(ROOT, "build_assets")
+    done = []
+
+    # ---- Whisper 模型 ----
+    m_src = os.path.join(assets, "models", "faster-whisper-small")
+    if os.path.isdir(m_src):
+        m_dst = os.path.join(outdir, "models", "faster-whisper-small")
+        if os.path.isdir(m_dst):
+            shutil.rmtree(m_dst, ignore_errors=True)
+        shutil.copytree(m_src, m_dst)
+        sz = sum(os.path.getsize(os.path.join(m_dst, f))
+                 for f in os.listdir(m_dst))
+        done.append("models/  %.1f MB" % (sz / 1024 / 1024))
+    else:
+        log("    ! 缺少语音模型，转写将需要联网下载")
+        log("      运行: python build/prepare_assets.py")
+
+    # ---- 本地词典 ----
+    for name in ("dict.json", "dict.sqlite", "dict.txt"):
+        d_src = os.path.join(assets, "dict", name)
+        if os.path.exists(d_src):
+            d_dst = os.path.join(outdir, "dict")
+            os.makedirs(d_dst, exist_ok=True)
+            shutil.copy2(d_src, os.path.join(d_dst, name))
+            done.append("dict/%s  %.1f MB"
+                        % (name, os.path.getsize(d_src) / 1024 / 1024))
+            break
+    else:
+        log("    ! 缺少本地词典，断网时无法查词")
+        log("      运行: python build/prepare_assets.py")
+
+    for d in done:
+        log("    OK " + d)
+    return done
+
+
 def main():
     log("=" * 58)
     log("  打包 " + NAME + ".exe")
@@ -191,6 +235,9 @@ def main():
     log("\n  清理运行残留")
     for x in clean_artifacts(outdir):
         log("    删除 " + x)
+
+    # 内置模型和词典
+    stage_assets(outdir)
 
     tot = cnt = 0
     for root, dirs, files in os.walk(outdir):

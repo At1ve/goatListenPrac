@@ -42,7 +42,9 @@ BAD_EXT = re.compile(
     r"srt|log|pyc|bmp|jpg|jpeg|spec)$", re.I)
 BAD_JSON = re.compile(r"\.json$", re.I)
 BAD_DIRS = {"data", "anki", "ffmpeg", "dist", "release", "runtime",
-            "__pycache__", ".git", ".venv", "venv", "node_modules"}
+            "__pycache__", ".git", ".venv", "venv", "node_modules",
+            # 构建资源：模型 464MB + 词典，用 prepare_assets.py 本地生成
+            "build_assets", "models", "dict"}
 BAD_NAMES = {"ui_state.json", "ui_state.json.tmp", "error.log", "crash.log"}
 
 

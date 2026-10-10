@@ -390,11 +390,47 @@ def load_segments(name):
 # ---------------------------------------------------------------- 转写
 
 _whisper_model = None
+def _find_bundled_model():
+    """
+    找随程序一起打包的 Whisper 模型。
+
+    安装包内置了 small 模型（约 464MB），这样**装完断网也能转写**，
+    不需要首次联网下载。
+
+    查找位置（按优先级）：
+      1. 环境变量 JINGTING_MODEL
+      2. <程序目录>/models/faster-whisper-small
+      3. <数据目录>/models/faster-whisper-small
+      4. exe 解压目录（PyInstaller _MEIPASS）
+    """
+    env = os.environ.get("JINGTING_MODEL")
+    if env and os.path.isdir(env):
+        return env
+
+    cands = [
+        os.path.join(PROJECT_DIR, "models", "faster-whisper-small"),
+        os.path.join(ROOT, "models", "faster-whisper-small"),
+    ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cands.append(os.path.join(meipass, "models", "faster-whisper-small"))
+
+    for p in cands:
+        # 认 model.bin 作为标志文件
+        if os.path.exists(os.path.join(p, "model.bin")):
+            return p
+    return None
+
+
 _model_lock = None
 
 
 def _get_model(model_size="small"):
-    """惰性加载并缓存 Whisper 模型"""
+    """
+    惰性加载并缓存 Whisper 模型。
+
+    优先用内置模型（离线可用）；找不到才让 faster-whisper 去下载。
+    """
     global _whisper_model, _model_lock
     import threading
     if _model_lock is None:
@@ -402,7 +438,16 @@ def _get_model(model_size="small"):
     with _model_lock:
         if _whisper_model is None:
             from faster_whisper import WhisperModel
-            _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+
+            local = _find_bundled_model()
+            if local:
+                _whisper_model = WhisperModel(
+                    local, device="cpu", compute_type="int8",
+                    local_files_only=True)
+            else:
+                # 没有内置模型 → 只能联网下载（首次约 464MB）
+                _whisper_model = WhisperModel(
+                    model_size, device="cpu", compute_type="int8")
     return _whisper_model
 
 
@@ -615,19 +660,45 @@ def translate_many(texts, target="zh-CN"):
 
 
 def lookup_word(word):
-    """查单词：中文释义（有道）+ 音标例句（dictionaryapi）"""
+    """
+    查单词，多级兜底，保证断网也能用：
+
+      1. dictionaryapi.dev  音标 + 英文释义 + 例句
+      2. 有道 suggest        中文释义
+      3. 本地词典            内置 ECDICT 精简版（离线）
+      4. 在线翻译            实在不行把词翻成中文
+
+    本地词典放在在线接口**之后**：在线结果更详细（有例句），
+    但断网时它会接住。
+    """
     word = (word or "").strip()
     if not word:
         return {"ok": False, "reason": "空"}
-    r = fetch_examples(word)
-    if r.get("ok"):
-        return r
-    # 兜底用翻译
-    t = translate(word)
-    if t.get("ok"):
-        return {"ok": True, "word": word, "meanings": [t["text"]],
-                "examples": [], "phonetic": "", "source": t.get("source")}
-    return {"ok": False, "reason": r.get("reason", "查询失败")}
+
+    # 1 + 2：在线查词
+    try:
+        r = fetch_examples(word)
+        if r.get("ok"):
+            return r
+    except Exception:
+        pass
+
+    # 3：本地词典（离线）
+    local = lookup_local(word)
+    if local.get("ok"):
+        return local
+
+    # 4：在线翻译兜底
+    try:
+        t = translate(word)
+        if t.get("ok"):
+            return {"ok": True, "word": word, "meanings": [t["text"]],
+                    "examples": [], "phonetic": "",
+                    "source": t.get("source")}
+    except Exception:
+        pass
+
+    return {"ok": False, "reason": "查不到这个词（离线词典里也没有）"}
 
 
 # ---------------------------------------------------------------- 标记
@@ -866,6 +937,113 @@ def fetch_examples(word, limit=2):
         errors.append(f"youdao: {e}")
 
     return {"ok": False, "reason": "；".join(errors) or "未找到释义"}
+
+
+# ---------------------------------------------------------------- 本地词典
+# 安装包内置一份精简的英汉词典（ECDICT 按词频裁剪）。
+# 断网或在线接口都失败时用它兜底，保证「查词」这个动作永远有结果。
+
+_dict_cache = None
+_dict_loaded = False
+
+
+def _find_dict_file():
+    """找内置词典文件"""
+    env = os.environ.get("JINGTING_DICT")
+    if env and os.path.exists(env):
+        return env
+
+    cands = [
+        os.path.join(PROJECT_DIR, "dict", "dict.json"),
+        os.path.join(ROOT, "dict", "dict.json"),
+    ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cands.append(os.path.join(meipass, "dict", "dict.json"))
+
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _load_local_dict():
+    """惰性加载本地词典（约 5MB JSON）"""
+    global _dict_cache, _dict_loaded
+    if _dict_loaded:
+        return _dict_cache
+    _dict_loaded = True
+
+    p = _find_dict_file()
+    if not p:
+        _dict_cache = None
+        return None
+    try:
+        with open(p, encoding="utf-8") as fp:
+            _dict_cache = json.load(fp)
+    except Exception:
+        _dict_cache = None
+    return _dict_cache
+
+
+def has_local_dict():
+    """本地词典是否可用（界面用来提示）"""
+    return _load_local_dict() is not None
+
+
+def lookup_local(word):
+    """查本地词典，返回和 lookup_word 一样的结构"""
+    d = _load_local_dict()
+    if not d:
+        return {"ok": False, "reason": "没有本地词典"}
+
+    w = (word or "").strip().lower()
+    if not w:
+        return {"ok": False, "reason": "空"}
+
+    # 1) 原形直接命中
+    hit = d.get(w)
+    key = w
+    if not hit:
+        # 2) 试常见变形
+        cands = []
+        for suf, repl in (("ies", "y"), ("es", ""), ("s", ""),
+                          ("ed", ""), ("ed", "e"), ("ing", ""),
+                          ("ing", "e"), ("ly", ""), ("er", ""),
+                          ("est", ""), ("ier", "y"), ("iest", "y")):
+            if w.endswith(suf) and len(w) > len(suf) + 1:
+                cands.append(w[: -len(suf)] + repl)
+
+        # 双写辅音：cancelled → cancel, stopped → stop
+        if len(w) > 3 and w[-3] == w[-4] and w[-1] in "dgptmn":
+            cands.append(w[:-1])
+        if w.endswith("ed") and len(w) > 4 and w[-3] == w[-4]:
+            cands.append(w[:-3])
+
+        for cand in cands:
+            if cand in d:
+                hit = d[cand]
+                key = cand
+                break
+    if not hit:
+        return {"ok": False, "reason": "本地词典没有这个词"}
+
+    meaning = hit.get("t", "")
+    phonetic = hit.get("p", "")
+    # 释义可能有多条，按分号拆成列表更好看
+    parts = [x.strip() for x in meaning.replace("；", ";").split(";")
+             if x.strip()]
+    if not parts:
+        parts = [meaning]
+
+    return {
+        "ok": True,
+        "source": "本地词典",
+        "word": key,
+        "phonetic": phonetic,
+        "meanings": parts[:5],
+        "examples": [],
+    }
 
 
 # ---------------------------------------------------------------- 制卡

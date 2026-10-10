@@ -21,6 +21,12 @@ error.log
 data/
 anki/
 
+# ---- 构建资源（模型 464MB + 词典，太大不入库）----
+# 用 python build/prepare_assets.py 在本机生成
+build_assets/
+models/
+dict/
+
 # ---- 第三方二进制（setup.py 自动下载）----
 ffmpeg/
 
