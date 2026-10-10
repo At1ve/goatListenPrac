@@ -64,18 +64,23 @@ Source: "__BUILDDIR__\*"; DestDir: "{app}"; \
         Flags: ignoreversion recursesubdirs createallsubdirs; \
         Excludes: "ui_state.json,ui_state.json.tmp,error.log,crash.log,\mp3s\*,\transcript\*,\marks\*,\cards\*,\trans_cache\*"
 
-; 附带文档
-Source: "__ROOT__\README.md";    DestDir: "{app}\docs"; Flags: ignoreversion
-Source: "__ROOT__\使用说明.md";   DestDir: "{app}\docs"; Flags: ignoreversion
-Source: "__ROOT__\LICENSE";      DestDir: "{app}";       Flags: ignoreversion
+; 内置 ffmpeg（切卡片音频用，省得用户自己装）
+Source: "__FFMPEG__"; DestDir: "{app}\ffmpeg\bin"; Flags: ignoreversion
+
+; 附带文档 + Anki 配置指引
+Source: "__ROOT__\README.md";      DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "__ROOT__\使用说明.md";     DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "__ROOT__\Anki安装指引.txt"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "__ROOT__\LICENSE";        DestDir: "{app}";       Flags: ignoreversion
 
 [Dirs]
-; 程序目录里的 ffmpeg（setup 时下载，放这里）
-Name: "{app}\ffmpeg"; Permissions: users-modify
+Name: "{app}\ffmpeg";      Permissions: users-modify
+Name: "{app}\ffmpeg\bin";  Permissions: users-modify
 
 [Icons]
 Name: "{group}\{#AppNameCN}";           Filename: "{app}\{#AppExeName}"
 Name: "{group}\使用说明";                Filename: "{app}\docs\使用说明.md"
+Name: "{group}\Anki 安装指引";           Filename: "{app}\docs\Anki安装指引.txt"
 Name: "{group}\打开数据目录";            Filename: "{app}\{#AppExeName}"; \
       Parameters: "--open-data"; Comment: "打开音频与标记所在目录"
 Name: "{group}\卸载 {#AppNameCN}";       Filename: "{uninstallexe}"
@@ -96,6 +101,10 @@ Type: filesandordirs; Name: "{app}\docs"
 var
   DataDirPage: TInputDirWizardPage;
   DataDir: String;
+
+// ---- 前置声明（Pascal 要求先声明后用）----
+function AnkiExePath(): String; forward;
+procedure OfferAnkiSetup(); forward;
 
 // ---------- 自定义「数据目录」页 ----------
 procedure InitializeWizard();
@@ -145,16 +154,96 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    Sub := ['mp3s', 'transcript', 'marks', 'cards', 'trans_cache',
-            'ffmpeg'];
+    Sub := ['mp3s', 'transcript', 'marks', 'cards', 'trans_cache'];
     for i := 0 to GetArrayLength(Sub) - 1 do
       ForceDirectories(DataDir + '\' + Sub[i]);
 
     // 把数据目录写进 install.ini，程序启动时读这里
     SetIniString('paths', 'data_dir', DataDir,
                  ExpandConstant('{app}\install.ini'));
+
+    // 没装 Anki 的话，提示怎么装
+    OfferAnkiSetup();
   end;
 end;
+
+// ============================================================
+//  Anki 引导
+//
+//  为什么不代装 Anki / AnkiConnect：
+//  试过自动下载 MSI 静默安装 + 直接往 addons21 写插件，
+//  但 Anki 26 的插件注册还依赖它自己的配置库（prefs21.db），
+//  外部写入的插件目录不会被加载，反而让用户以为装好了却用不了。
+//  官方推荐做法是在 Anki 里用「获取插件」输入编号，所以这里只做引导。
+// ============================================================
+
+// 找 anki.exe 的位置（MSI 装到用户目录，也兼容 Program Files）
+function AnkiExePath(): String;
+var
+  s: String;
+  roots: TArrayOfString;
+  i: Integer;
+begin
+  Result := '';
+
+  SetArrayLength(roots, 3);
+  roots[0] := ExpandConstant('{localappdata}\Programs\Anki');
+  roots[1] := ExpandConstant('{autopf}\Anki');
+  roots[2] := ExpandConstant('{pf32}\Anki');
+
+  for i := 0 to GetArrayLength(roots) - 1 do
+    if FileExists(roots[i] + '\anki.exe') then
+    begin
+      Result := roots[i] + '\anki.exe';
+      Exit;
+    end;
+
+  if RegQueryStringValue(HKCU,
+       'Software\Microsoft\Windows\CurrentVersion\Uninstall\Anki',
+       'InstallLocation', s) then
+  begin
+    s := RemoveBackslashUnlessRoot(s);
+    if FileExists(s + '\anki.exe') then
+      Result := s + '\anki.exe';
+  end;
+end;
+
+// 安装完成后提示 Anki 怎么配（没装才提示）
+procedure OfferAnkiSetup();
+var
+  msg: String;
+  ErrCode: Integer;
+begin
+  // 静默安装不打扰（脚本化部署时不该卡在弹窗上）
+  if WizardSilent() then
+    Exit;
+
+  if AnkiExePath() <> '' then
+  begin
+    // 已装 Anki，只提醒装插件
+    msg := '检测到你已经装了 Anki。' + #13#10 + #13#10 +
+           '还需要装一个 AnkiConnect 插件，本工具才能把卡片发进去：' + #13#10 + #13#10 +
+           '  1. 打开 Anki' + #13#10 +
+           '  2. 菜单：工具 → 插件' + #13#10 +
+           '  3. 点「获取插件」' + #13#10 +
+           '  4. 输入编号  2055492159  → 确定' + #13#10 +
+           '  5. 重启 Anki' + #13#10 + #13#10 +
+           '详细步骤见：安装目录\docs\Anki安装指引.txt';
+    MsgBox(msg, mbInformation, MB_OK);
+    Exit;
+  end;
+
+  if MsgBox(
+       '复习卡片需要一个叫 Anki 的软件（免费开源）。' + #13#10 + #13#10 +
+       '要现在打开下载页面吗？' + #13#10 +
+       '（不装也不影响听写和做标记，只是不能复习卡片）',
+       mbConfirmation, MB_YESNO) = IDYES then
+  begin
+    ShellExec('open', 'https://apps.ankiweb.net/',
+              '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+  end;
+end;
+
 
 // ---------- 卸载 ----------
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

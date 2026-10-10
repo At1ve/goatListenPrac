@@ -99,6 +99,24 @@ def main():
         return 1
     log("  OK 脚本: build/installer.iss")
 
+    # ---- 准备内置的 ffmpeg ----
+    log("\n  准备内置 ffmpeg")
+    ff_src = None
+    for cand in (os.path.join(os.path.dirname(ROOT), "ffmpeg", "bin", "ffmpeg.exe"),
+                 os.path.join(ROOT, "ffmpeg", "bin", "ffmpeg.exe")):
+        if os.path.exists(cand):
+            ff_src = cand
+            break
+    if not ff_src:
+        log("  ! 找不到 ffmpeg.exe")
+        log("    请先运行: python setup.py")
+        return 1
+    ff_dst_dir = os.path.join(DIST, "_ffmpeg")
+    os.makedirs(ff_dst_dir, exist_ok=True)
+    ff_dst = os.path.join(ff_dst_dir, "ffmpeg.exe")
+    shutil.copy2(ff_src, ff_dst)
+    log("  OK %.1f MB  %s" % (os.path.getsize(ff_dst) / 1024 / 1024, ff_src))
+
     # 清理残留，避免被打进安装包
     for f in ("ui_state.json", "ui_state.json.tmp", "error.log", "crash.log"):
         p = os.path.join(BUILDDIR, f)
@@ -121,6 +139,7 @@ def main():
     t = t.replace("__OUTDIR__", esc(DIST))
     t = t.replace("__OUTNAME__", outname)
     t = t.replace("__BUILDDIR__", esc(BUILDDIR))
+    t = t.replace("__FFMPEG__", esc(ff_dst))
     t = t.replace("__ICON__", esc(icon) if icon else "")
     # 文档与协议从仓库根取（用绝对路径，避免 ISCC 工作目录不同导致找不到）
     # 注意：Inno 的字符串里反斜杠要写两遍，所以这里必须用 esc()

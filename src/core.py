@@ -873,7 +873,11 @@ def fetch_examples(word, limit=2):
 def cut_audio(audio, start, end, out_path, pad=0.15):
     """用 ffmpeg 切音频"""
     if not os.path.exists(FFMPEG):
-        raise FileNotFoundError("找不到 ffmpeg")
+        raise FileNotFoundError(
+            "找不到 ffmpeg（切卡片音频需要它）\n"
+            "期望位置：%s\n\n"
+            "安装版本应自带 ffmpeg。如果缺失，请重新安装；\n"
+            "源码运行的话请先执行： python setup.py" % FFMPEG)
     s = max(0.0, start - pad)
     e = end + pad
     cmd = [
