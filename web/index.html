@@ -2715,9 +2715,20 @@ $('btnAnki').onclick = async ()=>{
   b.disabled = true; b.textContent = '导入中…';
   const r = await window.pywebview.api.import_to_anki(S.mat);
   b.disabled = false; b.textContent = '导入 Anki';
+
   if(r.ok){
-    toast(`导入成功 ${r.added} 张卡`
-        + (r.moved ? '，已移入牌组' : ''), 3000);
+    const parts = [];
+    if(r.added)   parts.push(`新增 ${r.added} 张`);
+    if(r.skipped) parts.push(`跳过 ${r.skipped} 张（已存在）`);
+    if(!parts.length) parts.push('没有新卡片');
+
+    if(r.added === 0 && r.skipped > 0){
+      toast(`没有新卡片：${r.skipped} 张之前已导入过`, 4000);
+    } else {
+      toast(`导入完成：${parts.join('，')}`
+          + (r.moved ? '，已移入牌组' : ''), 4000);
+    }
+    if(r.warning) setTimeout(()=>toast(r.warning, 5000), 800);
   } else {
     toast('导入失败：' + r.reason, 5000);
   }

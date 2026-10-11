@@ -1070,6 +1070,37 @@ def cut_audio(audio, start, end, out_path, pad=0.15):
         raise RuntimeError(r.stderr.decode("utf-8", "ignore")[:300])
 
 
+def card_fingerprint(name, sid, mtype, flds, text):
+    """
+    给一张卡算「内容指纹」。
+
+    用途：重复导入时判断这张卡是不是同一张 —— 指纹相同就跳过，
+    不同（标记被改过/句子文字变了）就重新导入。
+
+    为什么不用「材料名+句子号」当标识：
+      重新转写后句子编号会变，同一句话的号可能不同，
+      只按号判断会漏掉真正的新卡、或把旧卡当新卡。
+
+    组成（都取稳定内容，不含会变的音频文件名）：
+      材料名 | 句子号 | 标记类型 | 关键词 | 原句文字
+    """
+    import hashlib
+
+    key = ""
+    for k in ("word", "phrase", "structure", "misheard", "note"):
+        v = (flds.get(k) or "").strip()
+        if v:
+            key = v
+            break
+    meaning = (flds.get("meaning") or "").strip()
+
+    raw = "\u0001".join([
+        str(name), str(sid), str(mtype), key, meaning,
+        " ".join((text or "").split()),
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def build_cards(name, progress=None):
     """按标记生成卡片"""
     def log(msg):
@@ -1176,18 +1207,22 @@ def build_cards(name, progress=None):
             "text": text,
             "explain": "".join(explain),
             "meta": meta_text,
+            "fp": card_fingerprint(name, sid, mtype, flds, text),
+            "sid": sid,
+            "label": meta["label"],
         })
 
-    # 写 CSV：音频 / 原文 / 解说 / 元信息
+    # 写 CSV：音频 / 原文 / 解说 / 元信息 / 指纹
     import csv as _csv
     csv_path = os.path.join(outdir, "import.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as fp:
         w = _csv.writer(fp, delimiter="\t")
         for r in rows:
-            w.writerow([r["audio"], r["text"], r["explain"], r["meta"]])
+            w.writerow([r["audio"], r["text"], r["explain"], r["meta"], r["fp"]])
 
     log(f"完成：{len(rows)} 张卡")
-    return {"ok": True, "count": len(rows), "dir": outdir, "csv": csv_path}
+    return {"ok": True, "count": len(rows), "dir": outdir, "csv": csv_path,
+            "rows": rows}
 
 
 def html_escape(s):
@@ -1293,7 +1328,7 @@ def ensure_anki_model():
     """在 Anki 中创建笔记类型（若不存在）"""
     _anki_invoke("createModel",
                  modelName=MODEL_NAME,
-                 inOrderFields=["音频", "原文", "解说", "元信息"],
+                 inOrderFields=["音频", "原文", "解说", "元信息", "指纹"],
                  css=MODEL_CSS,
                  isCloze=False,
                  cardTemplates=[{"Name": "音频->理解",
@@ -1301,8 +1336,58 @@ def ensure_anki_model():
     return True
 
 
+def _anki_find_existing_fps(name):
+    """
+    查 Anki 里已经导入过哪些卡。
+
+    返回 (指纹集合, 旧卡签名集合)。
+
+    「旧卡签名」用于兼容修复前导入的卡（那时还没有指纹字段）：
+    对这类卡用「原文+元信息」算一个签名，导入时一并比对，
+    避免升级后把老卡再重复导一遍。
+    """
+    query = f'deck:"{DECK_NAME}" note:"{MODEL_NAME}"'
+    try:
+        ids = _anki_invoke("findNotes", query=query) or []
+    except Exception:
+        return set(), set()
+
+    if not ids:
+        return set(), set()
+
+    fps = set()
+    legacy = set()
+    for i in range(0, len(ids), 200):
+        batch = ids[i:i + 200]
+        try:
+            infos = _anki_invoke("notesInfo", notes=batch) or []
+        except Exception:
+            continue
+        for n in infos:
+            f = (n.get("fields") or {})
+
+            def val(k):
+                return ((f.get(k) or {}).get("value") or "").strip()
+
+            fp = val("指纹")
+            if fp:
+                fps.add(fp)
+            else:
+                # 老卡没有指纹 → 用内容算签名
+                legacy.add(_legacy_signature(val("原文"), val("元信息")))
+    return fps, legacy
+
+
+def _legacy_signature(text, meta):
+    """老卡（无指纹）的内容签名"""
+    import hashlib
+    raw = "\u0001".join([" ".join((text or "").split()),
+                         " ".join((meta or "").split())])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def import_via_ankiconnect(name, outdir, media, csv_path):
-    """通过 AnkiConnect 导入（Anki 可保持运行）"""
+    """通过 AnkiConnect 导入（Anki 可保持运行），带去重）"""
     import base64
     import csv as _csv
 
@@ -1324,19 +1409,35 @@ def import_via_ankiconnect(name, outdir, media, csv_path):
         except Exception as e:
             return {"ok": False,
                     "reason": f"Anki 里没有笔记类型「{MODEL_NAME}」，自动创建失败：{e}"}
+    else:
+        # 老版本创建的笔记类型没有「指纹」字段，补上
+        _ensure_fingerprint_field()
 
     # 3. 确保牌组存在
     decks = _anki_invoke("deckNames") or []
     if DECK_NAME not in decks:
         _anki_invoke("createDeck", deck=DECK_NAME)
 
-    # 4. 读 CSV 并建卡
+    # 4. 读 CSV
     with open(csv_path, encoding="utf-8", newline="") as fp:
         rows = list(_csv.reader(fp, delimiter="\t"))
 
+    # 5. 查已存在的指纹，决定哪些要导
+    existing, legacy = _anki_find_existing_fps(name)
+
     notes = []
+    skipped = 0
     for row in rows:
         if len(row) < 4:
+            continue
+        fp = row[4].strip() if len(row) > 4 else ""
+        # 同一张卡（指纹一致）已经导入过 → 跳过
+        if fp and fp in existing:
+            skipped += 1
+            continue
+        # 老卡（没有指纹）→ 按内容签名比对，避免升级后重复导一遍
+        if _legacy_signature(row[1], row[3]) in legacy:
+            skipped += 1
             continue
         notes.append({
             "deckName": DECK_NAME,
@@ -1346,12 +1447,15 @@ def import_via_ankiconnect(name, outdir, media, csv_path):
                 "原文": row[1],
                 "解说": row[2],
                 "元信息": row[3],
+                "指纹": fp,
             },
             "options": {"allowDuplicate": True},
         })
 
     if not notes:
-        return {"ok": False, "reason": "CSV 里没有有效卡片"}
+        return {"ok": True, "added": 0, "skipped": skipped,
+                "media": uploaded, "mode": "ankiconnect",
+                "reason": f"没有新卡片（{skipped} 张已存在）"}
 
     ids = _anki_invoke("addNotes", notes=notes)
     added = len([i for i in (ids or []) if i])
@@ -1370,12 +1474,33 @@ def import_via_ankiconnect(name, outdir, media, csv_path):
                 _anki_invoke("changeDeck", cards=card_ids, deck=DECK_NAME)
                 moved = len(card_ids)
             except Exception as e:
-                return {"ok": True, "added": added, "media": uploaded,
-                        "mode": "ankiconnect",
+                return {"ok": True, "added": added, "skipped": skipped,
+                        "media": uploaded, "mode": "ankiconnect",
                         "warning": f"卡片已添加但移动牌组失败：{e}"}
 
-    return {"ok": True, "added": added, "media": uploaded,
-            "moved": moved, "mode": "ankiconnect"}
+    return {"ok": True, "added": added, "skipped": skipped,
+            "media": uploaded, "moved": moved, "mode": "ankiconnect"}
+
+
+def _ensure_fingerprint_field():
+    """
+    给已存在的笔记类型补上「指纹」字段。
+
+    老版本（没有指纹）导入过的卡不会重复，因为它们的指纹是空的，
+    查重时匹配不到 —— 这是有意的：宁可多导一次，也不要误判成重复
+    而丢掉用户辛苦标的卡。
+    """
+    try:
+        fields = _anki_invoke("modelFieldNames", modelName=MODEL_NAME) or []
+    except Exception:
+        return
+    if "指纹" in fields:
+        return
+    try:
+        _anki_invoke("modelFieldAdd", modelName=MODEL_NAME,
+                     fieldName="指纹", index=len(fields))
+    except Exception:
+        pass
 
 
 def import_to_anki(name):
@@ -1425,20 +1550,55 @@ def import_to_anki(name):
         return {"ok": False, "reason": f"找不到笔记类型「{MODEL_NAME}」"}
     did = col.decks.id(DECK_NAME)
 
+    # 确保有「指纹」字段（老版本模板可能没有）
+    field_names = [f["name"] for f in model["flds"]]
+    if "指纹" not in field_names:
+        try:
+            col.models.add_field(model, col.models.new_field("指纹"))
+            col.models.save(model)
+            field_names = [f["name"] for f in model["flds"]]
+        except Exception:
+            pass
+    fp_idx = field_names.index("指纹") if "指纹" in field_names else None
+
+    # 收集已有指纹（查重）
+    existing = set()
+    if fp_idx is not None:
+        try:
+            for note_id in col.find_notes(f'note:"{MODEL_NAME}"'):
+                try:
+                    nt = col.get_note(note_id)
+                    v = (nt.fields[fp_idx] or "").strip()
+                    if v:
+                        existing.add(v)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     with open(csv_path, encoding="utf-8", newline="") as fp:
         rows = list(_csv.reader(fp, delimiter="\t"))
 
-    added = 0
+    added = skipped = 0
     for row in rows:
         if len(row) < 4:
+            continue
+        fp = row[4].strip() if len(row) > 4 else ""
+        if fp and fp in existing:
+            skipped += 1
             continue
         note = col.new_note(model)
         note.fields[0] = row[0]      # 音频
         note.fields[1] = row[1]      # 原文（高亮版）
         note.fields[2] = row[2]      # 背面内容
         note.fields[3] = row[3]      # 元信息
+        if fp_idx is not None:
+            note.fields[fp_idx] = fp
         col.add_note(note, did)
         added += 1
+        if fp:
+            existing.add(fp)
 
     col.close()
-    return {"ok": True, "added": added, "media": copied}
+    return {"ok": True, "added": added, "skipped": skipped,
+            "media": copied, "mode": "direct"}
