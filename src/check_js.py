@@ -10,7 +10,16 @@ import io
 import subprocess
 import tempfile
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+def _fix_console():
+    """控制台中文输出（只能直接运行时调用，见 resplit.py 里的说明）"""
+    try:
+        if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer,
+                                          encoding="utf-8",
+                                          errors="replace")
+    except Exception:
+        pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML = os.path.join(ROOT, "web", "index.html")
@@ -60,4 +69,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _fix_console()
     sys.exit(main())

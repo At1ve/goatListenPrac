@@ -1013,6 +1013,67 @@ button.danger:hover:not(:disabled){filter:brightness(1.1)}
 }
 .mark-acts button{font-size:12px;padding:6px 11px}
 
+/* 多字段时的操作提示 */
+.mark-hint{
+  margin-top:10px;font-size:12px;color:var(--fg-4);
+  letter-spacing:.2px;
+}
+
+/* ---------- 句子边界调整 ---------- */
+/* 行内那个小剪刀按钮：平时很淡，悬停才明显 */
+.rowacts button.segedit{
+  font-size:13px;padding:4px 8px;opacity:.45;
+  transition:opacity var(--fast);
+}
+.s:hover .rowacts button.segedit{opacity:.9}
+
+/* 标记面板里的两个「改边界」快捷按钮 */
+.segquick{
+  display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;
+  padding-top:11px;border-top:1px dashed var(--line);
+}
+.segquick button{font-size:12px;padding:6px 11px}
+
+.segctx{
+  margin:12px 0 16px;padding:10px 12px;border-radius:var(--r);
+  background:color-mix(in srgb,var(--surface) 60%,transparent);
+  border:1px solid var(--line);
+  font-size:13px;line-height:1.7;color:var(--fg-3);
+}
+.segctx .lbl{
+  display:block;font-size:11px;color:var(--fg-4);
+  letter-spacing:.5px;margin-bottom:2px;
+}
+.segctx .cur{color:var(--fg);font-weight:600}
+.segctx .dim{opacity:.55}
+.segctx div + div{margin-top:8px}
+
+.segrow{margin:14px 0}
+.segrow > label{
+  display:block;font-size:12px;color:var(--fg-4);
+  margin-bottom:7px;letter-spacing:.3px;
+}
+.segbtns{display:flex;gap:8px;flex-wrap:wrap}
+.segbtns button{font-size:13px;padding:7px 13px}
+
+.segsplit{display:flex;flex-direction:column;gap:4px}
+.segsplit input[type=range]{width:100%}
+.segmarks{
+  display:flex;justify-content:space-between;align-items:baseline;
+  font-size:11px;color:var(--fg-4);font-variant-numeric:tabular-nums;
+}
+.segtip{font-size:11px;color:var(--fg-4)}
+.segpreview{
+  margin:6px 0 10px;padding:9px 11px;border-radius:var(--r);
+  background:color-mix(in srgb,var(--surface) 55%,transparent);
+  font-size:13px;line-height:1.65;color:var(--fg-2);
+  min-height:38px;
+}
+.segpreview b{
+  color:var(--brand);font-weight:600;
+  background:var(--brand-dim);padding:1px 4px;border-radius:3px;
+}
+
 /* 全屏时让顶栏紧贴，去掉多余的圆角感 */
 body.fullscreen .topbar{height:46px}
 body.fullscreen .statusbar{height:26px}
@@ -1316,6 +1377,18 @@ body.dragging::after{
     <div class="dialog-bd">
       <div class="quote" id="mQuote"></div>
       <div id="mFields"></div>
+      <div class="mark-hint" id="mHint" style="display:none"></div>
+
+      <!-- 想标的其实是另一段？当场把句子边界改掉 -->
+      <div class="segquick">
+        <button class="ghost" id="mFixHere" title="这句分得不对？调整它的边界">
+          ✂ 这句分得不对，调整边界
+        </button>
+        <button class="ghost" id="mSplitHere" title="以当前播放位置为界，把这句切成两句">
+          ✂ 在当前位置切开
+        </button>
+      </div>
+
       <div class="mark-acts" id="mActs" style="display:none">
         <button class="ghost" id="mClear">删除此标记</button>
       </div>
@@ -1323,6 +1396,55 @@ body.dragging::after{
     <div class="dialog-ft">
       <button class="ghost" id="mCancel2">取消</button>
       <button class="primary" id="mSave">保存 <kbd style="opacity:.7">Enter</kbd></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 句子边界调整 ============ -->
+<div class="scrim" id="segScrim">
+  <div class="dialog" style="width:560px">
+    <div class="dialog-hd">
+      <span class="badge-lg" style="background:var(--brand-dim);color:var(--brand)">✂</span>
+      <h3>调整句子边界</h3>
+      <button class="x" id="segCancel">✕</button>
+    </div>
+    <div class="dialog-bd">
+      <div class="quote" id="segQuote"></div>
+
+      <!-- 上一句 / 本句 / 下一句 一起显示，方便判断该往哪边并 -->
+      <div class="segctx" id="segCtx"></div>
+
+      <div class="segrow">
+        <label>与相邻句合并</label>
+        <div class="segbtns">
+          <button class="ghost" id="segMergePrev">并入上一句 ↑</button>
+          <button class="ghost" id="segMergeNext">并入下一句 ↓</button>
+        </div>
+      </div>
+
+      <div class="segrow">
+        <label>在本句内部切开</label>
+        <div class="segsplit">
+          <input type="range" id="segSplit" min="0" max="1000" value="500">
+          <div class="segmarks">
+            <span id="segSplitT">0:00</span>
+            <span class="segtip">拖动选切分点，右边预览两半文字</span>
+            <span id="segEndT">0:00</span>
+          </div>
+        </div>
+        <div class="segpreview" id="segPreview"></div>
+        <button class="ghost" id="segDoSplit">在标记处切开</button>
+      </div>
+
+      <div class="mark-hint" style="display:block">
+        改完边界，已做的标记会跟着声音走（按时间重新挂到新句子上）。
+      </div>
+    </div>
+    <div class="dialog-ft">
+      <button class="ghost" id="segPlay">▶ 试听本句</button>
+      <span style="flex:1"></span>
+      <button class="ghost" id="segReset">恢复自动切分</button>
+      <button class="primary" id="segDone">完成</button>
     </div>
   </div>
 </div>
@@ -1342,6 +1464,9 @@ body.dragging::after{
   </div>
   <div class="menu-item" data-act="reimport">
     <span class="ic">↻</span><span class="lb">重新转写</span>
+  </div>
+  <div class="menu-item" data-act="resplit">
+    <span class="ic">✂</span><span class="lb">重新切句（不重新转写）</span>
   </div>
   <div class="menu-sep"></div>
   <div class="menu-item danger" data-act="delete">
@@ -1836,6 +1961,8 @@ function renderList(){
         <button data-a="cp" title="复制这句原文">复制</button>
         <button data-a="mk" title="${mk ? '修改这句的标记' : '给这句加标记'}">${
           mk ? '修改' : '标记'}</button>
+        <button data-a="fix" class="segedit"
+            title="这句分得不对？点这里调整边界">✂</button>
       </div>`;
     frag.appendChild(d);
   }
@@ -1860,6 +1987,7 @@ function renderList(){
       if(a === 'cp'){ copyText(seg.text); return; }
       if(a === 'tr'){ toggleTrans(id); return; }
       if(a === 'reveal'){ toggleReveal(id); return; }
+      if(a === 'fix'){ openSegFix(id); return; }
       if(a === 'mk'){
         S.active = id; markActive();
         if(S.marks[String(id)]) editMark(id);
@@ -1912,6 +2040,25 @@ function playSeg(id){
   markActive();
   updateNow(s);
 }
+
+/**
+ * 播放任意时间区间（句子边界调整时试听用）。
+ * 不进 S.active，播到 end 就停。
+ */
+let _rangeEnd = null;
+function playRange(start, end){
+  audio.currentTime = start;
+  audio.playbackRate = S.rate;
+  _rangeEnd = end;
+  audio.play().catch(()=>{});
+}
+audio.addEventListener('timeupdate', ()=>{
+  if(_rangeEnd !== null && audio.currentTime >= _rangeEnd){
+    audio.pause();
+    _rangeEnd = null;
+  }
+});
+audio.addEventListener('pause', ()=>{ _rangeEnd = null; });
 
 /**
  * 播放/暂停切换（每句左侧的 ▶ 按钮用这个）
@@ -2310,14 +2457,206 @@ document.addEventListener('mousedown', e=>{
 });
 
 /* ============================================================
+   句子边界调整
+   ------------------------------------------------------------
+   自动切句不可能 100% 准确（Whisper 有时连标点都没预测出来）。
+   这里让用户手动改：与邻句合并，或在本句内部切开。
+
+   改完边界句子会重新编号，后端会按时间把已做的标记重新挂好。
+   ============================================================ */
+let segFix = null;   // { id, seg, prev, next, at }
+
+function openSegFix(id){
+  const idx = S.segs.findIndex(x => x.id === id);
+  if(idx < 0) return;
+  const seg = S.segs[idx];
+
+  segFix = {
+    id,
+    seg,
+    prev: idx > 0 ? S.segs[idx - 1] : null,
+    next: idx < S.segs.length - 1 ? S.segs[idx + 1] : null,
+    at: (seg.start + seg.end) / 2,      // 当前选中的切分点
+  };
+
+  // 播放中先停一下，方便拖切分点
+  markWasPlaying = !audio.paused;
+  if(markWasPlaying) audio.pause();
+
+  const fmt = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+
+  $('segQuote').textContent = seg.text;
+
+  const ctx = [];
+  if(segFix.prev){
+    ctx.push(`<div class="dim"><span class="lbl">上一句</span>${
+      esc(segFix.prev.text)}</div>`);
+  }
+  ctx.push(`<div><span class="lbl">当前句（${fmt(seg.start)} – ${fmt(seg.end)}）</span>
+    <span class="cur">${esc(seg.text)}</span></div>`);
+  if(segFix.next){
+    ctx.push(`<div class="dim"><span class="lbl">下一句</span>${
+      esc(segFix.next.text)}</div>`);
+  }
+  $('segCtx').innerHTML = ctx.join('');
+
+  $('segMergePrev').disabled = !segFix.prev;
+  $('segMergeNext').disabled = !segFix.next;
+
+  // 切分滑块：0~1000 映射到本句时间范围
+  const sl = $('segSplit');
+  sl.value = 500;
+  segFix.at = (seg.start + seg.end) / 2;
+  updateSegPreview();
+
+  $('segScrim').classList.add('show');
+}
+
+function closeSegFix(resume){
+  $('segScrim').classList.remove('show');
+  segFix = null;
+  if(resume && markWasPlaying && audio.paused){
+    audio.play().catch(()=>{});
+  }
+  markWasPlaying = false;
+}
+
+/* 根据滑块位置算切分点，并预览两半文字 */
+function updateSegPreview(){
+  if(!segFix) return;
+  const seg = segFix.seg;
+  const r = +$('segSplit').value / 1000;
+  const at = seg.start + (seg.end - seg.start) * r;
+  segFix.at = at;
+
+  const fmt = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+  $('segSplitT').textContent = fmt(at);
+  $('segEndT').textContent = fmt(seg.end);
+
+  // 按时间比例切文字
+  const words = seg.text.split(/\s+/).filter(Boolean);
+  let cut = Math.round(words.length * r);
+  cut = Math.max(1, Math.min(words.length - 1, cut));
+
+  const a = words.slice(0, cut).join(' ');
+  const b = words.slice(cut).join(' ');
+
+  $('segPreview').innerHTML =
+    `<b>前半</b> ${esc(a)}<br><b>后半</b> ${esc(b)}`;
+
+  // 太靠边就不让切
+  const dur = seg.end - seg.start;
+  const ok = dur >= 0.8
+    && at >= seg.start + 0.3 && at <= seg.end - 0.3
+    && words.length >= 2;
+  $('segDoSplit').disabled = !ok;
+}
+$('segSplit').oninput = updateSegPreview;
+
+/* 合并：把本句并进上一句，或把下一句并进本句 */
+async function doMerge(dir){
+  if(!segFix) return;
+  const r = await window.pywebview.api.merge_segments(S.mat, segFix.id, dir);
+  if(!r.ok){ toast('合并失败：' + r.reason, 4000); return; }
+  await reloadAfterEdit(r);
+  toast('已合并，标记已跟着调整');
+}
+
+async function doSplit(){
+  if(!segFix) return;
+  const r = await window.pywebview.api.split_segment(
+    S.mat, segFix.id, segFix.at);
+  if(!r.ok){ toast('切开失败：' + r.reason, 4000); return; }
+  await reloadAfterEdit(r);
+  toast('已切开，标记已跟着调整');
+}
+
+/* 边界改完后重新加载，并让面板指向新的那一句 */
+async function reloadAfterEdit(r){
+  const keep = segFix ? segFix.id : null;
+  await openMaterial(S.mat);
+  if(keep){
+    // 尽量停在同一位置：找覆盖原来时刻的句子
+    const idx = S.segs.findIndex(x => x.id === Math.min(keep, S.segs.length));
+    if(idx >= 0) S.active = S.segs[idx].id;
+    markActive();
+  }
+  closeSegFix(false);
+}
+
+$('segMergePrev').onclick = ()=> doMerge('prev');
+$('segMergeNext').onclick = ()=> doMerge('next');
+$('segDoSplit').onclick = doSplit;
+$('segCancel').onclick = ()=> closeSegFix(true);
+$('segDone').onclick = ()=> closeSegFix(true);
+$('segScrim').onclick = e => { if(e.target === $('segScrim')) closeSegFix(true); };
+
+/* 标记面板里那两个快捷入口：先关掉标记面板，再打开边界面板 */
+$('mFixHere').onclick = ()=>{
+  const sid = markCtx ? markCtx.sid : S.active;
+  if(sid < 0){ toast('先选中一句话'); return; }
+  closeMark();
+  openSegFix(sid);
+};
+
+/* 以「当前播放位置」为界切开。
+   如果音频没在播/没定位，就取句子中点。 */
+$('mSplitHere').onclick = async ()=>{
+  const sid = markCtx ? markCtx.sid : S.active;
+  const s = S.segs.find(x => x.id === sid);
+  if(!s){ toast('先选中一句话'); return; }
+
+  let at = audio.currentTime;
+  // 播放位置不在本句范围内 → 用中点
+  if(!(at > s.start && at < s.end)) at = (s.start + s.end) / 2;
+
+  const r = await window.pywebview.api.split_segment(S.mat, sid, at);
+  if(!r.ok){ toast('切开失败：' + r.reason, 4000); return; }
+
+  closeMark();
+  markWasPlaying = false;
+  await openMaterial(S.mat);
+  toast('已切开，标记已跟着调整');
+};
+
+/* 试听：放这一句（或拖了切分点就放前半） */
+$('segPlay').onclick = ()=>{
+  if(!segFix) return;
+  const s = segFix.seg;
+  playRange(s.start, segFix.at);
+};
+
+/* 恢复自动切分 */
+$('segReset').onclick = async ()=>{
+  if(!confirm('放弃手工调整，恢复成自动切分的结果？\n\n'
+      + '已做的标记会按时间重新挂好。')) return;
+  const r = await window.pywebview.api.reset_segments(S.mat);
+  if(!r.ok){ toast(r.reason, 4000); return; }
+  closeSegFix(false);
+  await openMaterial(S.mat);
+  toast(`已恢复自动切分（${r.segments} 句）`);
+};
+
+/* ============================================================
    标记
    ============================================================ */
 let markCtx = null;
+let markWasPlaying = false;   // 打开标记面板前是否在播放
 
 function openMark(type){
   if(S.active < 0){ toast('先选中一句话'); return; }
   const s = S.segs.find(x=>x.id === S.active);
   if(!s) return;
+
+  // 标记时要停下来：一边播一边填表会分心，
+  // 而且填完再播下一句容易听漏。
+  // 记住是否本来在播，取消标记时恢复播放。
+  markWasPlaying = !audio.paused;
+  if(markWasPlaying){
+    audio.pause();
+    savePosition();
+  }
+
   markCtx = { type, sid: s.id, isEdit: false };
 
   const mt = MARKS[type];
@@ -2346,9 +2685,19 @@ function openMark(type){
   // 已有标记 → 显示「删除」按钮
   const has = !!S.marks[String(s.id)];
   $('mActs').style.display = has ? 'flex' : 'none';
-  $('mSave').textContent = has ? '更新' : '保存';
   $('mSave').innerHTML = (has ? '更新' : '保存')
     + ' <kbd style="opacity:.7">Enter</kbd>';
+
+  // 多个字段时提示可以跳着填
+  const hint = $('mHint');
+  if(hint){
+    if(mt.keys.length > 1){
+      hint.textContent = 'Enter / ↓ 填下一项，填完自动保存';
+      hint.style.display = '';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
 
   $('markScrim').classList.add('show');
   setTimeout(()=>{ const i = box.querySelector('input'); if(i) i.focus(); }, 60);
@@ -2364,13 +2713,51 @@ function editMark(sid){
   openMark(mk.type);
 }
 
+/* ---------- 标记表单里的字段跳转 ----------
+   Enter / ↓ 跳到下一项，↑ 跳上一项。
+   返回 false 表示已经在最后一项（此时 Enter 应该触发保存）。
+*/
+function markFieldNav(dir){
+  const inputs = Array.from($('mFields').querySelectorAll('input'));
+  if(!inputs.length) return false;
+
+  const cur = inputs.indexOf(document.activeElement);
+  if(cur < 0){
+    // 焦点不在任何一个输入框上 → 从头/尾进入
+    (dir > 0 ? inputs[0] : inputs[inputs.length - 1]).focus();
+    return true;
+  }
+
+  const next = cur + dir;
+
+  // 往下走且已经最后一项 → 交给调用方（Enter 保存）
+  if(dir > 0 && next >= inputs.length) return false;
+  // 往上走越过第一项 → 停在第一项
+  if(dir < 0 && next < 0) return false;
+
+  inputs[next].focus();
+  inputs[next].select();
+  return true;
+}
+
 function closeMark(){
   $('markScrim').classList.remove('show');
   markCtx = null;
 }
-$('mCancel').onclick = closeMark;
-$('mCancel2').onclick = closeMark;
-$('markScrim').onclick = e => { if(e.target === $('markScrim')) closeMark(); };
+
+/** 取消标记：如果打开面板前在播，就接着播 */
+function cancelMark(){
+  const resume = markWasPlaying;
+  closeMark();
+  if(resume && audio.paused){
+    audio.play().catch(()=>{});
+  }
+  markWasPlaying = false;
+}
+
+$('mCancel').onclick = cancelMark;
+$('mCancel2').onclick = cancelMark;
+$('markScrim').onclick = e => { if(e.target === $('markScrim')) cancelMark(); };
 
 async function saveMark(){
   if(!markCtx) return;
@@ -2385,6 +2772,7 @@ async function saveMark(){
   const res = await window.pywebview.api.set_mark(S.mat, sid, markCtx.type, fields);
   S.marks = res.marks;
   closeMark();
+  markWasPlaying = false;   // 标完不自动续播，让用户自己决定下一步
 
   if(S.filter === 'all') refreshRow(sid);
   else applyFilter();
@@ -2402,6 +2790,7 @@ $('mClear').onclick = async ()=>{
   const res = await window.pywebview.api.set_mark(S.mat, sid, null, {});
   S.marks = res.marks;
   closeMark();
+  markWasPlaying = false;
   if(S.filter === 'all') refreshRow(sid);
   else applyFilter();
   renderStats();
@@ -2542,8 +2931,31 @@ $('matMenu').onclick = e => {
   const act = it.dataset.act;
   if(act === 'rename') openRename();
   else if(act === 'reimport') reimportMaterial();
+  else if(act === 'resplit') resplitMaterial();
   else if(act === 'delete') openDelete();
 };
+
+/* ---------- 重新切句（不重新转写）----------
+   切句算法改进后，用它更新已有材料。几秒钟就好。
+   注意：句子编号会变，已标记的句子可能对不上。
+*/
+async function resplitMaterial(){
+  if(!S.mat){ toast('还没有材料'); return; }
+  const n = (S.segs || []).length;
+  if(!confirm(`重新切分「${S.mat}」的句子？\n\n`
+      + `· 不重新转写，几秒完成\n`
+      + `· 当前 ${n} 句，切完句数和编号都会变\n`
+      + `· 原来的文字稿会备份成 .old.json\n\n`
+      + `已做的标记会尽量跟着句子走，但可能有个别错位。`)) return;
+
+  toast('正在重新切句…', 6000);
+  const r = await window.pywebview.api.resplit(S.mat);
+  if(!r.ok){ toast('切句失败：' + r.reason, 5000); return; }
+
+  // 重新加载，让界面拿到新句子
+  await openMaterial(S.mat);
+  toast(`已重新切句：${r.before} 句 → ${r.after} 句`, 4200);
+}
 
 /* ---------- 删除 ---------- */
 async function openDelete(){
@@ -2948,8 +3360,25 @@ $('btnFollow').onclick = ()=> setFollow(!S.follow);
 document.addEventListener('keydown', e=>{
   // 弹窗内
   if($('markScrim').classList.contains('show')){
-    if(e.key === 'Enter'){ e.preventDefault(); saveMark(); }
-    if(e.key === 'Escape'){ e.preventDefault(); closeMark(); }
+    if(e.key === 'Escape'){ e.preventDefault(); cancelMark(); return; }
+
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      // Enter 在最后一个输入框里才是「保存」，
+      // 否则跳到下一项 —— 填词→填释义→保存，全程不用碰鼠标
+      if(!markFieldNav(1)) saveMark();
+      return;
+    }
+    if(e.key === 'ArrowDown'){
+      // ↓ 也是下一项（但输入框里 ↓ 可能被浏览器用来选自动补全，
+      //   这里只在没有候选时接管）
+      if(markFieldNav(1)) e.preventDefault();
+      return;
+    }
+    if(e.key === 'ArrowUp'){
+      if(markFieldNav(-1)) e.preventDefault();
+      return;
+    }
     return;
   }
   if($('cmdk').classList.contains('show')) return;   // 面板自己处理

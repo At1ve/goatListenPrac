@@ -383,6 +383,63 @@ class Api:
             "ankiconnect": core.ankiconnect_available(),
         }
 
+    # ---------------- 重新切句 ----------------
+
+    def resplit(self, name):
+        """
+        只重新切分句子，不重新转写。
+
+        切句算法改进后，用它把已有材料也更新一下（几秒就完），
+        不用重新跑 Whisper。
+        """
+        if self.task["running"]:
+            return {"ok": False, "reason": "有任务在进行中，稍后再试"}
+        try:
+            import resplit as _rs
+            r = _rs.resplit_file(name)
+            if r.get("ok"):
+                # 切完要重新加载，界面才能看到新句子
+                return {"ok": True, "before": r.get("before"),
+                        "after": r.get("after")}
+            return {"ok": False, "reason": r.get("reason", "切分失败")}
+        except Exception as e:
+            log("重新切句失败: " + str(e))
+            return {"ok": False, "reason": str(e)}
+
+    # ---------------- 手动调整句子边界 ----------------
+
+    def merge_segments(self, name, seg_id, direction="next"):
+        """把某一句与上/下一句合并"""
+        try:
+            return core.merge_segments(name, int(seg_id), direction)
+        except Exception as e:
+            log("合并句子失败: " + str(e))
+            return {"ok": False, "reason": str(e)}
+
+    def split_segment(self, name, seg_id, at_time):
+        """在某一句内部按时间点切开"""
+        try:
+            return core.split_segment(name, int(seg_id), float(at_time))
+        except Exception as e:
+            log("拆分句子失败: " + str(e))
+            return {"ok": False, "reason": str(e)}
+
+    def set_segment_range(self, name, seg_id, start, end):
+        """直接设置某句的时间范围"""
+        try:
+            return core.set_segment_range(name, int(seg_id),
+                                          float(start), float(end))
+        except Exception as e:
+            log("调整句子范围失败: " + str(e))
+            return {"ok": False, "reason": str(e)}
+
+    def reset_segments(self, name):
+        """放弃手工调整，恢复自动切分"""
+        try:
+            return core.reset_segments(name)
+        except Exception as e:
+            return {"ok": False, "reason": str(e)}
+
 
 def start_server():
     global _start_port

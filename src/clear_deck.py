@@ -15,9 +15,19 @@ import os
 import re
 import argparse
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
+
+
+def _fix_console():
+    """控制台中文输出（只能直接运行时调用，见 resplit.py 里的说明）"""
+    try:
+        if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer,
+                                          encoding="utf-8",
+                                          errors="replace")
+    except Exception:
+        pass
 
 
 def main():
@@ -88,4 +98,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _fix_console()
     sys.exit(main())

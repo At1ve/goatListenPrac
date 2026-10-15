@@ -60,6 +60,9 @@ ENV/
 Thumbs.db
 desktop.ini
 
+# Windows 快捷方式（各人本机建的，不该进仓库）
+*.lnk
+
 # ---- 临时 ----
 *.tmp
 *.bak

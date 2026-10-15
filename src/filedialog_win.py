@@ -15,19 +15,28 @@ import os
 import sys
 import threading
 
-# ---- stdout/stderr 可能是 None（无控制台打包）----
-if sys.stdout is not None:
+
+def _fix_console():
+    """
+    让 Windows 控制台能正确输出中文。
+
+    【只能在本文件被直接运行时调用，不能在模块顶层执行】
+    重设 sys.stdout 会让先前那层 wrapper 被回收，而它析构时会关闭
+    底层 buffer —— 之后所有 print 都会抛
+    "I/O operation on closed file"，把整个导入流程搞挂。
+
+    （app.py 会 `import filedialog_win`，所以模块顶层绝不能动 stdout。）
+    """
     try:
         import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
-                                      errors="replace")
-    except Exception:
-        pass
-if sys.stderr is not None:
-    try:
-        import io
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8",
-                                      errors="replace")
+        if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer,
+                                          encoding="utf-8",
+                                          errors="replace")
+        if sys.stderr is not None and hasattr(sys.stderr, "buffer"):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer,
+                                          encoding="utf-8",
+                                          errors="replace")
     except Exception:
         pass
 
@@ -114,5 +123,6 @@ def pick_audio_file(title="选择音频文件", initialdir=None):
 
 
 if __name__ == "__main__":
+    _fix_console()
     r = pick_audio_file()
     print("结果:", r)

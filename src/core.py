@@ -376,15 +376,305 @@ def load_segments(name):
         raise FileNotFoundError(f"找不到 {name} 的转写数据")
     with open(p, encoding="utf-8") as fp:
         data = json.load(fp)
+
     segs = []
-    for s in data["segments"]:
+    # 兼容老文件（那里 id 是 0 起始）：按位置重新编号，统一成 1 起始
+    for i, s in enumerate(data["segments"]):
         segs.append({
-            "id": s["id"] + 1,          # 对外用 1 起始编号
+            "id": i + 1,
             "start": s["start"],
             "end": s["end"],
             "text": s["text"],
         })
     return {"name": name, "duration": data["duration"], "segments": segs}
+
+
+# ---------------------------------------------------------------- 句子边界编辑
+#
+# 自动切句不可能 100% 准确（Whisper 有时连标点都没预测出来），
+# 所以允许用户手动调整。
+#
+# 核心难点：改边界会改变句子编号，而标记是按编号存的。
+# 处理办法：改边界前先记下每个标记【所在的时间点】，
+#          改完按时间把标记重新挂到新句子上 —— 内容跟着走，不丢。
+
+def _segments_path(name):
+    return os.path.join(TRANSCRIPT_DIR, name, name + ".segments.json")
+
+
+def _read_raw_segments(name):
+    p = _segments_path(name)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fp:
+            return json.load(fp)
+    except Exception:
+        return None
+
+
+def _write_raw_segments(name, data, backup=True):
+    """写回 segments.json（同时刷新 txt/srt）"""
+    p = _segments_path(name)
+
+    if backup:
+        bak = p.replace(".segments.json", ".segments.usersplit.json")
+        # 只备份一次，保留用户最初的手工改动之前的样子
+        if not os.path.exists(bak):
+            try:
+                shutil.copy2(p, bak)
+            except Exception:
+                pass
+
+    with open(p, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=2)
+
+    # 同步 txt / srt
+    try:
+        segs = data["segments"]
+        tdir = os.path.join(TRANSCRIPT_DIR, name)
+        with open(os.path.join(tdir, name + ".txt"), "w",
+                  encoding="utf-8") as fp:
+            for s in segs:
+                fp.write("%3d. %s\n" % (s["id"] + 1, s["text"]))
+        with open(os.path.join(tdir, name + ".srt"), "w",
+                  encoding="utf-8") as fp:
+            for s in segs:
+                fp.write("%d\n%s --> %s\n%s\n\n"
+                         % (s["id"] + 1, fmt_ts(s["start"]), fmt_ts(s["end"]),
+                            s["text"]))
+    except Exception:
+        pass
+
+    return True
+
+
+def _reindex(segs):
+    """
+    重排编号。
+
+    注意：统一用 **1 起始**编号 —— 文件里、界面里、标记的 key 全都是这个。
+    以前文件里存 0 起始、对外转 1 起始，两边混着用，
+    导致 merge_segments 拿到界面传来的 id 后对不上，合并错了句子。
+    """
+    for i, s in enumerate(segs):
+        s["id"] = i + 1
+    return segs
+
+
+def _remap_marks(name, old_segs, new_segs):
+    """
+    句子边界变了之后，把标记重新挂到新句子上。
+
+    做法：标记原来的 key 就是句子编号（1 起始），
+    取出那句的【中间时刻】，在新句子里找覆盖这个时刻的那一句挂上去。
+    这样标记的内容跟着「那段时间的声音」走，不会丢、也不会串位。
+    """
+    data = load_marks(name)
+    marks = data.get("marks") or {}
+    if not marks:
+        return 0
+
+    # 老句子按编号索引（编号就是 1 起始）
+    old_by_id = {}
+    for i, s in enumerate(old_segs):
+        old_by_id[i + 1] = s
+
+    new_marks = {}
+    moved = 0
+
+    for key, m in marks.items():
+        try:
+            sid = int(key)
+        except Exception:
+            continue
+        old = old_by_id.get(sid)
+        if not old:
+            continue
+        t = (old["start"] + old["end"]) / 2.0      # 标记所在的时间点
+
+        # 找新句子里覆盖这个时刻的
+        hit = None
+        for s in new_segs:
+            if s["start"] <= t <= s["end"]:
+                hit = s
+                break
+        if hit is None:
+            # 边界正好落在缝里 → 找时间上最近的
+            best = None
+            for s in new_segs:
+                d = min(abs(s["start"] - t), abs(s["end"] - t))
+                if best is None or d < best[0]:
+                    best = (d, s)
+            hit = best[1] if best else None
+
+        if hit is None:
+            continue
+        new_marks[str(hit["id"])] = m
+        moved += 1
+
+    save_marks(name, new_marks)
+    return moved
+
+
+def merge_segments(name, seg_id, direction="next"):
+    """
+    把某一句与相邻句合并。
+
+    direction: "next" = 与下一句合并， "prev" = 与上一句合并
+    """
+    data = _read_raw_segments(name)
+    if not data:
+        return {"ok": False, "reason": "找不到文字稿"}
+
+    segs = data["segments"]
+    idx = None
+    for i, s in enumerate(segs):
+        if s["id"] == seg_id:
+            idx = i
+            break
+    if idx is None:
+        return {"ok": False, "reason": "找不到这一句"}
+
+    if direction == "next":
+        if idx + 1 >= len(segs):
+            return {"ok": False, "reason": "已经是最后一句"}
+        a, b = segs[idx], segs[idx + 1]
+    else:
+        if idx - 1 < 0:
+            return {"ok": False, "reason": "已经是第一句"}
+        a, b = segs[idx - 1], segs[idx]
+
+    old_segs = [dict(s) for s in segs]
+
+    merged = {
+        "id": 0,
+        "start": min(a["start"], b["start"]),
+        "end": max(a["end"], b["end"]),
+        "text": (a["text"].strip() + " " + b["text"].strip()).strip(),
+    }
+    # a、b 在原列表里的位置
+    if direction == "next":
+        lo = idx                      # a 在 idx，b 在 idx+1
+    else:
+        lo = idx - 1                  # a 在 idx-1，b 在 idx
+    new_segs = segs[:lo] + [merged] + segs[lo + 2:]
+    _reindex(new_segs)
+
+    data["segments"] = new_segs
+    _write_raw_segments(name, data)
+    moved = _remap_marks(name, old_segs, new_segs)
+
+    return {"ok": True, "segments": len(new_segs), "marks_kept": moved,
+            "action": "merge", "text": merged["text"]}
+
+
+def split_segment(name, seg_id, at_time):
+    """
+    在某一句内部按时间点切成两句。
+
+    at_time: 切分时刻（秒），必须在这句的时间范围内
+    """
+    data = _read_raw_segments(name)
+    if not data:
+        return {"ok": False, "reason": "找不到文字稿"}
+
+    segs = data["segments"]
+    idx = None
+    for i, s in enumerate(segs):
+        if s["id"] == seg_id:
+            idx = i
+            break
+    if idx is None:
+        return {"ok": False, "reason": "找不到这一句"}
+
+    s = segs[idx]
+    dur = s["end"] - s["start"]
+    # 切点不能贴着两端（至少留 0.3 秒）
+    if dur < 0.8:
+        return {"ok": False, "reason": "这句太短了，切不开"}
+    if not (s["start"] + 0.3 <= at_time <= s["end"] - 0.3):
+        return {"ok": False, "reason": "切分点太靠边，请往里挪一点"}
+
+    old_segs = [dict(x) for x in segs]
+
+    # 按时间比例把文字分成两半
+    words = s["text"].split()
+    ratio = (at_time - s["start"]) / dur
+    cut = int(round(len(words) * ratio))
+    cut = max(1, min(len(words) - 1, cut))       # 保证两边都有词
+    left_text = " ".join(words[:cut])
+    right_text = " ".join(words[cut:])
+
+    left = {"id": 0, "start": s["start"], "end": at_time, "text": left_text}
+    right = {"id": 0, "start": at_time, "end": s["end"], "text": right_text}
+
+    new_segs = segs[:idx] + [left, right] + segs[idx + 1:]
+    _reindex(new_segs)
+
+    data["segments"] = new_segs
+    _write_raw_segments(name, data)
+    moved = _remap_marks(name, old_segs, new_segs)
+
+    return {"ok": True, "segments": len(new_segs), "marks_kept": moved,
+            "action": "split"}
+
+
+def set_segment_range(name, seg_id, start, end):
+    """
+    直接改某一句的时间范围（拖拽调整边界）。
+
+    会与相邻句协调：本句变长就吃掉邻句，变短就还给邻句。
+    """
+    data = _read_raw_segments(name)
+    if not data:
+        return {"ok": False, "reason": "找不到文字稿"}
+
+    segs = data["segments"]
+    idx = None
+    for i, s in enumerate(segs):
+        if s["id"] == seg_id:
+            idx = i
+            break
+    if idx is None:
+        return {"ok": False, "reason": "找不到这一句"}
+
+    if end - start < 0.5:
+        return {"ok": False, "reason": "时间范围太小"}
+
+    old_segs = [dict(x) for x in segs]
+    segs[idx]["start"] = round(start, 3)
+    segs[idx]["end"] = round(end, 3)
+
+    # 保持整体连续：本句的 end 决定下一句的 start，start 决定上一句的 end
+    if idx + 1 < len(segs):
+        segs[idx + 1]["start"] = round(end, 3)
+    if idx - 1 >= 0:
+        segs[idx - 1]["end"] = round(start, 3)
+
+    _write_raw_segments(name, data)
+    moved = _remap_marks(name, old_segs, segs)
+
+    return {"ok": True, "segments": len(segs), "marks_kept": moved}
+
+
+def reset_segments(name):
+    """放弃手工调整，恢复自动切分结果"""
+    bak = os.path.join(TRANSCRIPT_DIR, name,
+                       name + ".segments.usersplit.json")
+    if not os.path.exists(bak):
+        return {"ok": False, "reason": "没有手工调整的记录，无需恢复"}
+
+    p = _segments_path(name)
+    old = _read_raw_segments(name) or {"segments": []}
+    old_segs = old.get("segments", [])
+
+    shutil.copy2(bak, p)
+    data = _read_raw_segments(name)
+    moved = _remap_marks(name, old_segs, data.get("segments", []))
+
+    return {"ok": True, "segments": len(data.get("segments", [])),
+            "marks_kept": moved}
 
 
 # ---------------------------------------------------------------- 转写
@@ -525,12 +815,21 @@ def transcribe_file(audio_path, model_size="small", lang="en", progress=None):
                   fp, ensure_ascii=False, indent=2)
 
     # 4) 按句子边界重新切分（Whisper 的 VAD 分段会把句子切断/粘合）
+    #
+    # 这一步失败【不能】影响导入结果 —— 转写本身已经成功，
+    # 最坏情况只是保留 Whisper 的原始分段。
+    # 以前这里会 print，一旦 stdout 被别处搞坏就抛异常，
+    # 整个导入被判为失败（用户看到的报错信息完全对不上真正原因）。
     try:
         import resplit
         rep("save", 0, 1, "按句子边界整理…")
         resplit.resplit(name)
     except Exception as e:
-        print("句子重切失败（保留原始分段）:", e)
+        try:
+            import app as _app
+            _app.log("句子重切失败（保留原始分段）: %s" % e)
+        except Exception:
+            pass
 
     rep("done", 1, 1, f"完成，共 {len(segs)} 句")
     return {"ok": True, "name": name, "segments": len(segs),
