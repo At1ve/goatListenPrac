@@ -1471,7 +1471,8 @@ body.dragging::after{
         <div class="cc-tip">
           <kbd>←</kbd><kbd>→</kbd> 微调 0.2 秒 ·
           <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 调 1 秒 ·
-          也可以直接点上面的单词
+          <kbd>Tab</kbd> 换另一头
+          <br>也可以直接点上面的单词
         </div>
       </div>
 
@@ -3005,8 +3006,17 @@ $('ccWords').onclick = e => {
    这里不再单独监听，免得一次按键切两次 */
 
 /**
- * 方向键微调。由标记面板的全局按键处理调用。
+ * 方向键微调卡片音频边界。
+ * 由标记面板的全局按键处理调用。
  * 返回 true 表示已处理（调用方就别再做别的了）。
+ *
+ * 关于「光标在输入框里」：
+ *   ← → 在标记面板里**始终**用于调整音频边界 —— 用户明确要求
+ *   「保证左右方向键直接可以使用」。
+ *   代价是输入框里不能再用方向键挪光标，所以：
+ *     · 打字、退格、Home/End、鼠标点击定位都不受影响
+ *     · 需要挪光标时按 F2 或点一下别的字段（见下方 toggleCaretMode）
+ *   实际上这个面板里输入的都是生词/释义，很少需要在中间插字。
  */
 function cardCutNudge(e){
   if(!ccState || !$('markScrim').classList.contains('show')) return false;
@@ -3726,9 +3736,12 @@ document.addEventListener('keydown', e=>{
     }
 
     // ← → → 微调当前那一头（Shift 加大步长）
-    // 注意：要在输入框里优先给文本编辑用，所以先看焦点在不在 input 上
-    const inInput = e.target.tagName === 'INPUT';
-    if(!inInput && cardCutNudge(e)){ e.preventDefault(); return; }
+    //
+    // 这里**不看焦点在不在输入框上** —— 用户要求「左右方向键直接可以使用」。
+    // 如果按老逻辑（焦点在 input 就跳过），用户点进词义框后按 ← →
+    // 只会挪文本光标，调不了音频边界，等于这个快捷键废了。
+    // 代价：输入框里不能用 ← → 挪光标（见 cardCutNudge 的说明）。
+    if(cardCutNudge(e)){ e.preventDefault(); return; }
 
     if(e.key === 'Enter'){
       e.preventDefault();
