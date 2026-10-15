@@ -1052,14 +1052,48 @@ button.danger:hover:not(:disabled){filter:brightness(1.1)}
   margin-top:-7px;border-radius:50%;
   background:var(--brand);border:2px solid var(--bg);
   cursor:ew-resize;
-  transition:transform var(--fast);
+  transition:transform var(--fast),box-shadow var(--fast);
 }
 .cc-handle:hover{transform:scale(1.18)}
+/* 当前正在调的那一头 → 放大 + 光晕 */
+.cc-handle.focus{
+  transform:scale(1.28);
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--brand) 28%,transparent);
+}
+.cc-handle span{
+  position:absolute;top:-17px;left:50%;transform:translateX(-50%);
+  font-size:9px;font-weight:700;color:var(--brand);letter-spacing:.5px;
+}
+.cc-handle.focus span{color:var(--brand)}
+
+/* 点词选范围 */
+.cc-words{
+  margin:10px 0 12px;line-height:2.05;
+  font-size:13.5px;color:var(--fg-3);
+  user-select:none;
+}
+.cc-w{
+  cursor:pointer;padding:2px 3px;border-radius:3px;
+  transition:background var(--fast),color var(--fast);
+}
+.cc-w:hover{background:var(--brand-dim);color:var(--brand)}
+.cc-w.on{
+  background:var(--brand-dim);color:var(--brand);font-weight:600;
+}
+
 .cc-acts{
-  display:flex;align-items:center;gap:9px;margin-top:11px;
+  display:flex;align-items:center;gap:9px;margin-top:11px;flex-wrap:wrap;
 }
 .cc-acts button{font-size:12px;padding:5px 10px}
-.cc-tip{font-size:11px;color:var(--fg-4);margin-left:auto}
+.cc-focus{
+  font-size:12px;color:var(--fg-4);
+  display:flex;align-items:center;gap:5px;
+}
+.cc-focus b{color:var(--brand);font-weight:600}
+.cc-tip{
+  margin-top:9px;font-size:11px;color:var(--fg-4);line-height:1.9;
+}
+.cc-tip kbd{font-size:10px}
 
 .segctx{
   margin:12px 0 16px;padding:10px 12px;border-radius:var(--r);
@@ -1406,23 +1440,38 @@ body.dragging::after{
       <div id="mFields"></div>
       <div class="mark-hint" id="mHint" style="display:none"></div>
 
-      <!-- 卡片音频截取：默认整句，可拖动选择其中一段 -->
+      <!-- 卡片音频截取：默认整句，可点词或拖滑块选择其中一段 -->
       <div class="cardcut">
         <div class="cardcut-hd">
           <span>卡片音频</span>
           <span class="cardcut-t" id="ccTime">整句</span>
         </div>
+
+        <!-- 点词选范围：第一次点设起点，第二次点设终点 -->
+        <div class="cc-words" id="ccWords"
+             title="点第一个词设起点，点第二个词设终点"></div>
+
+        <!-- 滑块：辅助微调（方向键也行） -->
         <div class="cc-range" id="ccRange">
           <div class="cc-track">
             <div class="cc-sel" id="ccSel"></div>
-            <div class="cc-handle" id="ccA" data-h="a"></div>
-            <div class="cc-handle" id="ccB" data-h="b"></div>
+            <div class="cc-handle" id="ccA" data-h="a"><span>A</span></div>
+            <div class="cc-handle" id="ccB" data-h="b"><span>B</span></div>
           </div>
         </div>
+
         <div class="cc-acts">
+          <span class="cc-focus">
+            正在调：<b id="ccWhich">起点 A</b>
+            <kbd>Tab</kbd> 切换
+          </span>
           <button class="ghost" id="ccPlay" title="试听选中的片段">▶ 试听</button>
           <button class="ghost" id="ccFull" title="恢复成整句">整句</button>
-          <span class="cc-tip">拖两端的小圆点，只把需要的那段做进卡片</span>
+        </div>
+        <div class="cc-tip">
+          <kbd>←</kbd><kbd>→</kbd> 微调 0.2 秒 ·
+          <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 调 1 秒 ·
+          也可以直接点上面的单词
         </div>
       </div>
 
@@ -2229,6 +2278,7 @@ audio.addEventListener('timeupdate', ()=>{
   // ---- 播放时自动跟随当前句 ----
   // 位置落在哪一句，就高亮哪一句（不打断用户手动滚动）
   if(audio.paused || !S.segs.length) return;
+  if(_noFollowUntil && performance.now() < _noFollowUntil) return;
   const t = audio.currentTime;
   const cur = S.segs.find(x => t >= x.start && t < x.end);
   if(cur && cur.id !== S.active){
@@ -2295,14 +2345,57 @@ $('rate').onchange = e => {
 $('repeat').onchange = savePrefs;
 ['optPause','optAuto'].forEach(id=>{ $(id).onchange = savePrefs; });
 
+/**
+ * ↑ / ↓ 切换句子。
+ *
+ * 关键：如果音频正在播，必须**同时把音频挪到新句子并暂停**，
+ * 否则播放中的 timeupdate 会把 active 拽回音频所在的句子 ——
+ * 表现就是「按了上下键，又被强行拉回去」。
+ *
+ * 行为：
+ *   正在播 → 跳到新句子的开头并暂停（你按方向键多半是想换一句听）
+ *   已暂停 → 只移动选中，不动播放位置
+ */
+let _noFollowUntil = 0;    // 这段时间内不让 timeupdate 抢 active
+
 function nextSeg(dir){
   if(!S.view.length) return;
   let i = S.view.findIndex(x=>x.id === S.active);
   if(i < 0) i = dir > 0 ? -1 : S.view.length;
   i = Math.max(0, Math.min(S.view.length-1, i + dir));
-  S.active = S.view[i].id;
-  markActive();
-  updateNow(S.view[i]);
+  const seg = S.view[i];
+
+  const wasPlaying = !audio.paused;
+  if(wasPlaying){
+    audio.pause();
+    _rangeEnd = null;
+    // 把播放头也挪过去，这样再按空格就从这句开始
+    try{ audio.currentTime = seg.start; }catch(e){}
+    savePosition();
+  }
+  // 刚手动切句，短时间内别让 timeupdate 把 active 抢回去
+  _noFollowUntil = performance.now() + 400;
+
+  S.active = seg.id;
+  // 键盘切换时应该滚到可见（是用户主动选的），
+  // 所以临时借用 follow 的滚动逻辑，不依赖「跟随」开关
+  scrollActiveIntoView();
+  markActive(false);
+  updateNow(seg);
+}
+
+/** 把当前句滚到可视区（用户主动操作时用，不受「跟随」开关限制）*/
+function scrollActiveIntoView(){
+  const el = document.querySelector('.s.active');
+  if(!el) return;
+  const list = $('list');
+  const lr = list.getBoundingClientRect();
+  const er = el.getBoundingClientRect();
+  const margin = 60;
+  if(er.top >= lr.top + margin && er.bottom <= lr.bottom - margin) return;
+  const target = list.scrollTop + (er.top - lr.top)
+               - list.clientHeight * 0.33;
+  list.scrollTo({top: Math.max(0, target), behavior: 'smooth'});
 }
 
 /* ============================================================
@@ -2718,24 +2811,85 @@ function openMark(type){
 /* ============================================================
    卡片音频截取
    ------------------------------------------------------------
-   默认用整句音频做卡片。但有时候只需要句子里的一个片段
-   （比如只想记 "impulsive" 那半句），所以允许拖两端小圆点选取。
-   选择结果存进标记的 fields，制卡时按它切音频。
+   默认用整句音频做卡片。有时只需要句子里的一个片段
+   （比如只想记 "impulsive" 那半句），三种方式选范围：
+
+     1. 点单词    —— 点第一个词设起点，点第二个词设终点（最直观）
+     2. 拖滑块    —— 拖两端小圆点
+     3. 方向键    —— Tab 切换调 A 还是 B，←→ 微调
+
+   结果存进标记的 fields（cutStart/cutEnd），制卡时按它切音频。
+
+   单词的时间怎么来：不重新跑 Whisper（太慢），
+   按句子时长和词数**比例**分配 —— 选个范围够用了。
    ============================================================ */
-let ccState = null;   // { a, b, seg }
+let ccState = null;   // { seg, a, b, focus: 'a'|'b', words: [...], anchor }
 
 function initCardCut(seg){
   if(!seg) return;
   const cur = markCtx ? (S.marks[String(markCtx.sid)] || {}) : {};
   const f = cur.fields || {};
-  // 已有标记可能存过截取范围
+
   const a = typeof f.cutStart === 'number' ? f.cutStart : seg.start;
   const b = typeof f.cutEnd   === 'number' ? f.cutEnd   : seg.end;
-  ccState = { seg, a, b };
 
+  ccState = {
+    seg, a, b,
+    focus: 'a',          // 当前在调哪一头
+    anchor: null,        // 点词时：第一个点作为起点
+    words: wordTimes(seg),
+  };
+
+  renderCardWords();
   drawCardCut();
 }
 
+/**
+ * 把句子按词切开，给每个词估算时间。
+ * 按字符数加权（长词占的时间多），比按词数平均更准一点。
+ */
+function wordTimes(seg){
+  const toks = seg.text.split(/\s+/).filter(Boolean);
+  if(!toks.length) return [];
+  const span = seg.end - seg.start;
+  const total = toks.reduce((s,w)=>s + w.length + 1, 0) || 1;
+
+  const out = [];
+  let acc = 0;
+  for(const w of toks){
+    const share = (w.length + 1) / total;
+    const s = seg.start + span * acc;
+    acc += share;
+    const e = seg.start + span * acc;
+    out.push({ w, start: s, end: e });
+  }
+  // 收尾对齐，避免累计误差
+  if(out.length) out[out.length - 1].end = seg.end;
+  return out;
+}
+
+/** 渲染可点击的单词行 */
+function renderCardWords(){
+  if(!ccState) return;
+  const { words, a, b } = ccState;
+  const box = $('ccWords');
+  box.innerHTML = '';
+
+  words.forEach((it, i)=>{
+    const sp = document.createElement('span');
+    sp.className = 'cc-w';
+    sp.dataset.i = i;
+    sp.textContent = it.w;
+
+    // 落在选中范围内的词加高亮
+    const mid = (it.start + it.end) / 2;
+    if(mid >= a - 0.01 && mid <= b + 0.01) sp.classList.add('on');
+
+    box.appendChild(sp);
+  });
+}
+
+/** 画滑块和手柄 */
 function drawCardCut(){
   if(!ccState) return;
   const { seg, a, b } = ccState;
@@ -2749,14 +2903,49 @@ function drawCardCut(){
   $('ccA').style.left = (ra * 100) + '%';
   $('ccB').style.left = (rb * 100) + '%';
 
+  // 高亮当前正在调的那一头
+  $('ccA').classList.toggle('focus', ccState.focus === 'a');
+  $('ccB').classList.toggle('focus', ccState.focus === 'b');
+  $('ccWhich').textContent = ccState.focus === 'a'
+    ? '起点 A' : '终点 B';
+
   const dur = b - a;
   const full = Math.abs(dur - span) < 0.05;
-  const fmt = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}.`
-                 + String(Math.floor((t%1)*10));
   $('ccTime').textContent = full
     ? '整句 ' + dur.toFixed(1) + 's'
-    : `${fmt(a)} – ${fmt(b)}　${dur.toFixed(1)}s`;
+    : dur.toFixed(1) + 's';
+
+  renderCardWords();
 }
+
+/** 点词：第一次点设起点，第二次点设终点；之后每次点重新开始 */
+$('ccWords').onclick = e => {
+  const sp = e.target.closest('.cc-w');
+  if(!sp || !ccState) return;
+  const it = ccState.words[+sp.dataset.i];
+  if(!it) return;
+
+  if(ccState.anchor === null){
+    // 第一次：这一整段作为起点，终点先给到句尾
+    ccState.anchor = it;
+    ccState.a = it.start;
+    ccState.b = ccState.seg.end;
+    ccState.focus = 'b';       // 自然引导到调终点
+    toast('起点已设为「' + it.w + '」，再点一个词设终点', 2200);
+  } else {
+    // 第二次：确定范围
+    const A = ccState.anchor, B = it;
+    const lo = A.start <= B.start ? A : B;
+    const hi = A.start <= B.start ? B : A;
+    ccState.a = lo.start;
+    ccState.b = hi.end;
+    ccState.anchor = null;
+    ccState.focus = 'b';
+    // 试听选中的片段
+    playRange(ccState.a, ccState.b);
+  }
+  drawCardCut();
+};
 
 /* 拖动两端 */
 (function(){
@@ -2782,6 +2971,8 @@ function drawCardCut(){
       const mid = (ccState.a + ccState.b) / 2;
       dragging = t < mid ? 'a' : 'b';
     }
+    ccState.focus = dragging;        // 拖哪个就调哪个
+    ccState.anchor = null;
     e.preventDefault();
     onMove(e);
   });
@@ -2789,7 +2980,7 @@ function drawCardCut(){
   function onMove(e){
     if(!dragging || !ccState) return;
     const t = posToTime(e.clientX);
-    const MIN = 0.4;                      // 至少保留 0.4 秒
+    const MIN = 0.3;                      // 至少保留 0.3 秒
     if(dragging === 'a'){
       ccState.a = Math.min(t, ccState.b - MIN);
       ccState.a = Math.max(ccState.seg.start, ccState.a);
@@ -2810,11 +3001,44 @@ function drawCardCut(){
   });
 })();
 
+/* Tab 切换调 A 还是 B —— 统一由标记面板的全局按键处理，
+   这里不再单独监听，免得一次按键切两次 */
+
+/**
+ * 方向键微调。由标记面板的全局按键处理调用。
+ * 返回 true 表示已处理（调用方就别再做别的了）。
+ */
+function cardCutNudge(e){
+  if(!ccState || !$('markScrim').classList.contains('show')) return false;
+  const k = e.key;
+  if(k !== 'ArrowLeft' && k !== 'ArrowRight') return false;
+
+  const step = e.shiftKey ? 1.0 : 0.2;
+  const dir = (k === 'ArrowRight') ? 1 : -1;
+  const { seg } = ccState;
+  const MIN = 0.3;
+
+  if(ccState.focus === 'a'){
+    let v = ccState.a + dir * step;
+    v = Math.max(seg.start, Math.min(ccState.b - MIN, v));
+    ccState.a = Math.round(v * 100) / 100;
+  } else {
+    let v = ccState.b + dir * step;
+    v = Math.min(seg.end, Math.max(ccState.a + MIN, v));
+    ccState.b = Math.round(v * 100) / 100;
+  }
+  ccState.anchor = null;
+  drawCardCut();
+  return true;
+}
+
 $('ccPlay').onclick = ()=>{ if(ccState) playRange(ccState.a, ccState.b); };
 $('ccFull').onclick = ()=>{
   if(!ccState) return;
   ccState.a = ccState.seg.start;
   ccState.b = ccState.seg.end;
+  ccState.anchor = null;
+  ccState.focus = 'a';
   drawCardCut();
 };
 
@@ -3490,6 +3714,21 @@ document.addEventListener('keydown', e=>{
   // 弹窗内
   if($('markScrim').classList.contains('show')){
     if(e.key === 'Escape'){ e.preventDefault(); cancelMark(); return; }
+
+    // Tab → 切换调整卡片音频的起点 / 终点
+    if(e.key === 'Tab' && ccState){
+      e.preventDefault();
+      ccState.focus = ccState.focus === 'a' ? 'b' : 'a';
+      ccState.anchor = null;
+      drawCardCut();
+      toast(ccState.focus === 'a' ? '正在调：起点 A' : '正在调：终点 B', 1400);
+      return;
+    }
+
+    // ← → → 微调当前那一头（Shift 加大步长）
+    // 注意：要在输入框里优先给文本编辑用，所以先看焦点在不在 input 上
+    const inInput = e.target.tagName === 'INPUT';
+    if(!inInput && cardCutNudge(e)){ e.preventDefault(); return; }
 
     if(e.key === 'Enter'){
       e.preventDefault();

@@ -1348,7 +1348,13 @@ def lookup_local(word):
 # ---------------------------------------------------------------- 制卡
 
 def cut_audio(audio, start, end, out_path, pad=0.15):
-    """用 ffmpeg 切音频"""
+    """
+    用 ffmpeg 切音频。
+
+    pad：首尾各留一点余量，避免把音节的起音/尾音切掉。
+    用户手动选过范围（点词/拖滑块）时调用方会传更小的值 ——
+    那是他精挑的边界，多留 0.15 秒会让他觉得「没切准」。
+    """
     if not os.path.exists(FFMPEG):
         raise FileNotFoundError(
             "找不到 ffmpeg（切卡片音频需要它）\n"
@@ -1464,7 +1470,10 @@ def build_cards(name, progress=None):
         if ce - cs < 0.3:                     # 太短就当整句处理
             cs, ce = seg["start"], seg["end"]
 
-        cut_audio(audio, cs, ce, os.path.join(media, fname))
+        # 用户精挑过范围 → 少留白，否则他会觉得「没切准」
+        custom = (cs != seg["start"] or ce != seg["end"])
+        cut_audio(audio, cs, ce, os.path.join(media, fname),
+                  pad=0.05 if custom else 0.15)
 
         # 组装：原文（高亮版）和解说（背面内容）分开
         text = seg["text"]
