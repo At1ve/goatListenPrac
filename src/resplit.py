@@ -196,21 +196,30 @@ def resplit(name, dry_run=False):
     #       "…I'm like, okay,"        |  "I'm glad I'm not into that."
     #   这种一句被劈开的情况留着不合并（实测有 42 处）。
     #
-    #   正确做法：
-    # 合并策略：
-    #   · 上句没收尾 → 【必须】接上，不受长度限制
-    #     （"…for every cow or sheep" + "taken off the land…" 是一句话，
-    #      哪怕接完 35 词也得接 —— 断在中间比长一点糟糕得多）
-    #   · 只是太短 → 有长度限制地合并，避免把两句并成一句
+    # 合并策略（重要）
+    #
+    # 用户的要求：「一个分句里要能得到一份完整的语意，
+    #              避免出现小于 15 词的分句，但允许出现。」
+    #
+    # 所以 15 词是一个**目标**，不是硬性规定。具体分两种情况：
+    #
+    #   A. 残句（结尾没有句末标点，语义接得上下一句）
+    #      → 【必须】接着合并，直到凑够 15 词或句子自然结束。
+    #        这是真正要消灭的对象：
+    #          "…and why is my co-host,"  |  "Anna."
+    #          "…revealed the answer"     |  "to your question?"
+    #
+    #   B. 完整短句（有句末标点，自己就是一句）
+    #      → 【保留】。"Goodbye." / "Hello, Anna." / "That's right."
+    #        这些是对话里的正常应答，硬并进邻句反而把不相干的话粘一起。
+    #
+    # 长度上限沿用之前的数据：平均 13 词、最长 30 词左右听感最好。
+    TARGET_WORDS = 15          # 目标下限：残句合并要凑够这个数
     MIN_DUR, MIN_WORDS = 1.2, 4
-    # 可接受的长度上限：用户明确说过「30 词以内都行，只要语义连贯」
     MAX_DUR, MAX_WORDS = 14.0, 30
     # 合并的硬上限：先把句子接完整，之后第 4 步再统一按从句切开。
-    # 设得比 MAX 宽，是因为「接完整再切」远比「留在半句上」重要 ——
-    # 切在从句处读起来自然，切在半句上一定别扭。
     HARD_WORDS, HARD_DUR = 45, 26.0
     # 接完整之后还能容忍的长度。超过这个才真的去切。
-    # 比 MAX 宽是有意的：接完整的长句宁可略长，也不要再切开。
     KEEP_WORDS, KEEP_DUR = 40, 22.0
 
     def unfinished(t):
@@ -236,43 +245,120 @@ def resplit(name, dry_run=False):
             dur = s["end"] - s["start"]
             w = len(s["text"].split())
 
-            must_merge = unfinished(p["text"])
-            too_short = (dur < MIN_DUR or w < MIN_WORDS)
-
-            if must_merge:
-                # 上句没说完 → 一定要接上（除非会拼出离谱的长句）
+            # 上句没说完 → 一定接上
+            if unfinished(p["text"]):
+                # 接上之后如果还不到目标词数，就继续接（循环会处理）
                 if (pw + w <= HARD_WORDS
                         and pdur + dur <= HARD_DUR):
                     p["text"] = p["text"].rstrip() + " " + s["text"].lstrip()
                     p["end"] = s["end"]
                     p["just_merged"] = True
                     continue
-            elif too_short and not complete(s["text"]):
-                # 太短的句子要并进上一句 —— 但**仅限它自己不是完整句**时。
-                # 像 "I'm Neil." / "Yeah, absolutely." 这种短句
-                # 本来就是完整的一句话，并进上一句反而破坏了原意。
+
+            # 上句已经完整，但还是偏短，而下一句是「残句的开头」
+            # （即下一句自己不成句）→ 把下一句拉进来凑语义
+            elif (pw < TARGET_WORDS and not complete(p["text"])):
                 if (pw + w <= MAX_WORDS and pdur + dur <= MAX_DUR):
                     p["text"] = p["text"].rstrip() + " " + s["text"].lstrip()
                     p["end"] = s["end"]
+                    p["just_merged"] = True
                     continue
+
+            # 兜底：极短的碎屑（不到 MIN_WORDS）且不成句 → 并进去
+            elif ((dur < MIN_DUR or w < MIN_WORDS)
+                    and not complete(s["text"])):
+                if (pw + w <= MAX_WORDS and pdur + dur <= MAX_DUR):
+                    p["text"] = p["text"].rstrip() + " " + s["text"].lstrip()
+                    p["end"] = s["end"]
+                    p["just_merged"] = True      # 别漏这个标志，
+                    continue                     # 否则第 4 步会把它又切开
 
         merged.append(dict(s))
 
+    # ---- 3.5 收尾：把偏短的段合并到 15 词左右 ----
+    #
+    # 这一步处理三种情况（都要让「一个分句里能得到完整语义」）：
+    #
+    #   1. 残句（不成句）→ 必须接着合，直到成句
+    #   2. 残句且仍偏短 → 继续吃下一句，凑到 TARGET_WORDS
+    #   3. 连续多个完整短句，且语义接得上 → 也合并
+    #
+    # 第 3 种是关键。看这个真实例子：
+    #     [123]  7词 | However, prices have gone up a lot.
+    #     [124]  5词 | There's a lot of inflation.
+    #     [125]  6词 | That's not necessarily the case anymore.
+    #     [126]  7词 | Of course, it's still much more convenient.
+    #   四句都在讲同一件事（方便但涨价了），合成 25 词一句更好读。
+    #
+    # 但下面这种不能合 —— 是另一个人在插话：
+    #     [140]  3词 | Okay, that's wild.
+    #     [141]  4词 | Burger and chips, right?
+    #   所以要有「话题是否接得上」的判断（见 _topic_break）。
+    changed = True
+    guard = 0
+    while changed and guard < 20:
+        changed = False
+        guard += 1
+        out = []
+        i = 0
+        while i < len(merged):
+            cur = dict(merged[i])        # 拷贝，避免改到原对象
+            consumed = 1                 # 本项吃掉了几项
+
+            # 连续往后吃，直到不满足合并条件
+            while i + consumed < len(merged):
+                nxt = merged[i + consumed]
+                cw = len(cur["text"].split())
+                cdur = cur["end"] - cur["start"]
+                nw = len(nxt["text"].split())
+                ndur = nxt["end"] - nxt["start"]
+
+                cur_ok = complete(cur["text"])
+                nxt_ok = complete(nxt["text"])
+                room = (cw + nw <= HARD_WORDS and cdur + ndur <= HARD_DUR)
+
+                merge_this = False
+                if room:
+                    if not cur_ok:
+                        # 本句没说完 → 必须把下一句接上来
+                        merge_this = True
+                    elif not nxt_ok and cw >= TARGET_WORDS:
+                        # 本句完整且够长，下一句残缺。
+                        # 不要把它拉进来 —— 那会把
+                        # "…a lot of smoke. But because Canada has…" 粘一起。
+                        # 让残缺的那句自己去接它后面（外层循环会处理）。
+                        merge_this = False
+                    elif cw < TARGET_WORDS and not _topic_break(cur, nxt):
+                        # 两句都完整，但本句偏短、话题接得上 → 合读更顺
+                        merge_this = True
+
+                if not merge_this:
+                    break
+
+                cur["text"] = cur["text"].rstrip() + " " + nxt["text"].lstrip()
+                cur["end"] = nxt["end"]
+                cur["just_merged"] = True
+                consumed += 1
+                changed = True
+
+            out.append(cur)
+            i += consumed
+        merged = out
+
     # ---- 4. 过长的句子：切在从句/标点处 ----
     #
-    # 重要：这里只处理「本来就长」的句子。
-    # 刚刚为了接完整而合并出来的句子（just_merged）不再切 ——
-    # 否则等于白合并：
-    #   "…not the problem means that if you are not actively trying
-    #    to fix a problem,"                     ← 24 词，切了
-    #   "you are helping it continue."           ← 5 词碎片
-    # 用户明确说过 30 词以内都能接受，只要能保持语义连贯。
+    # 但有个原则（用户明确要求）：
+    #   「一个分句里要能得到一份完整的语意」
+    # 所以如果切出来的某一块太短（比如只剩 "so far really." 这种尾巴），
+    # 就宁可不切 —— 长句顶多听着累，碎片会让整句意思不完整。
+    #
+    # 长度上限：合并过的句子放宽（那是有意接完整的），
+    #          本来就长的句子按 MAX_WORDS。
     final = []
     for s in merged:
         dur = s["end"] - s["start"]
         words = len(s["text"].split())
 
-        # 完整句子放宽到 KEEP_WORDS，超出才切
         limit_words = KEEP_WORDS if s.get("just_merged") else MAX_WORDS
         limit_dur = KEEP_DUR if s.get("just_merged") else MAX_DUR
 
@@ -282,6 +368,31 @@ def resplit(name, dry_run=False):
             continue
 
         chunks = _split_by_clause(s, MAX_WORDS)
+
+        # 切出来的块能不能独立成立？
+        # 不行的两种情况：
+        #   1. 太短（不到 MIN_CHUNK 词）
+        #   2. 以逗号结尾且不到目标词数 —— 语义上还要靠下一块
+        #      （"But because Canada has so much forest and just wilderness,"）
+        # 出现任一种就整句保留不切：
+        # 长句顶多听着累，把一句话劈成语义不完整的碎片才是真难用。
+        MIN_CHUNK = max(6, MAX_WORDS // 3)
+        bad = False
+        for c in chunks:
+            t = c["text"].strip()
+            w = len(t.split())
+            if w < MIN_CHUNK:
+                bad = True
+                break
+            if w < TARGET_WORDS and not complete(t):
+                bad = True
+                break
+
+        if len(chunks) <= 1 or bad:
+            final.append({"text": s["text"], "start": s["start"],
+                          "end": s["end"]})
+            continue
+
         for c in chunks:
             final.append({"text": c["text"], "start": round(c["start"], 3),
                           "end": round(c["end"], 3)})
@@ -381,6 +492,59 @@ def resplit_file(name, quiet=True):
         after = 0
 
     return {"ok": True, "before": before, "after": after, "output": buf.getvalue()}
+
+
+def _topic_break(a, b):
+    """
+    判断两句之间是不是「话题断了」—— 断了就不该合并成一句。
+
+    只能靠表面线索判断（没有说话人信息），用这几条：
+
+      1. 时间间隔太远        → 中间有明显停顿，多半换人了
+      2. 下一句是明显的应答语 → "Okay." / "Yeah, absolutely." / "Right?"
+      3. 下一句以呼语开头     → "Hello, Anna." / "Thanks, Neil."
+      4. 下一句是问句而本句已结束 → 一问一答，不该粘一起
+
+    宁可保守（少合一点），也不要合出两句不相干的话。
+    """
+    # 1. 时间间隔
+    gap = b["start"] - a["end"]
+    if gap > 1.2:
+        return True
+
+    bt = b["text"].strip()
+    words = bt.split()
+    if not words:
+        return True
+
+    first = words[0].lower().strip(",.")
+    low = bt.lower()
+
+    # 2. 应答语开头
+    REPLY_STARTS = {
+        "okay", "ok", "yeah", "yep", "yes", "no", "nope", "right", "sure",
+        "exactly", "absolutely", "definitely", "totally", "wow", "oh",
+        "hmm", "well", "thanks", "thank", "sorry", "please", "hello",
+        "hi", "hey", "bye", "goodbye", "cool", "nice", "great", "wow,",
+    }
+    if first in REPLY_STARTS:
+        return True
+
+    # 3. 很短的应答（≤3 词）单独看
+    if len(words) <= 3:
+        return True
+
+    # 4. 明显的呼语："Hello, Anna." / "Thanks, Neil."
+    if re.match(r"^(hello|hi|hey|thanks|thank you|sorry|bye|goodbye)\b",
+                low):
+        return True
+
+    # 5. 结尾有"? "且下一句是陈述 → 一问一答
+    #    （但要排除本句是 "..., right?" 这种反问尾巴）
+    if bt.endswith("?") and len(words) <= 8:
+        return True
+
+    return False
 
 
 def _split_by_clause(seg, max_words):

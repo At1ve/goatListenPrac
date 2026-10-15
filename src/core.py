@@ -1381,7 +1381,7 @@ def card_fingerprint(name, sid, mtype, flds, text):
       只按号判断会漏掉真正的新卡、或把旧卡当新卡。
 
     组成（都取稳定内容，不含会变的音频文件名）：
-      材料名 | 句子号 | 标记类型 | 关键词 | 原句文字
+      材料名 | 句子号 | 标记类型 | 关键词 | 原句文字 | 截取范围
     """
     import hashlib
 
@@ -1393,9 +1393,15 @@ def card_fingerprint(name, sid, mtype, flds, text):
             break
     meaning = (flds.get("meaning") or "").strip()
 
+    # 截取范围也算进指纹 —— 用户改了卡片音频的首尾，
+    # 就是一张新卡，应该允许重新导入
+    cut = ""
+    if flds.get("cutStart") is not None or flds.get("cutEnd") is not None:
+        cut = "%s-%s" % (flds.get("cutStart", ""), flds.get("cutEnd", ""))
+
     raw = "\u0001".join([
         str(name), str(sid), str(mtype), key, meaning,
-        " ".join((text or "").split()),
+        " ".join((text or "").split()), cut,
     ])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -1439,7 +1445,26 @@ def build_cards(name, progress=None):
         meta = MARK_TYPES.get(mtype, MARK_TYPES["x"])
 
         fname = f"seg_{i:04d}.mp3"
-        cut_audio(audio, seg["start"], seg["end"], os.path.join(media, fname))
+
+        # 卡片音频范围：默认整句；标记里存了 cutStart/cutEnd 就用它
+        # （用户在标记面板里拖两端选了句子的一部分）
+        cs = seg["start"]
+        ce = seg["end"]
+        try:
+            if flds.get("cutStart") is not None:
+                v = float(flds["cutStart"])
+                if seg["start"] - 0.01 <= v < ce:
+                    cs = v
+            if flds.get("cutEnd") is not None:
+                v = float(flds["cutEnd"])
+                if cs < v <= seg["end"] + 0.01:
+                    ce = v
+        except (TypeError, ValueError):
+            cs, ce = seg["start"], seg["end"]
+        if ce - cs < 0.3:                     # 太短就当整句处理
+            cs, ce = seg["start"], seg["end"]
+
+        cut_audio(audio, cs, ce, os.path.join(media, fname))
 
         # 组装：原文（高亮版）和解说（背面内容）分开
         text = seg["text"]

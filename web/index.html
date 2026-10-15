@@ -1027,12 +1027,39 @@ button.danger:hover:not(:disabled){filter:brightness(1.1)}
 }
 .s:hover .rowacts button.segedit{opacity:.9}
 
-/* 标记面板里的两个「改边界」快捷按钮 */
-.segquick{
-  display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;
-  padding-top:11px;border-top:1px dashed var(--line);
+/* 标记面板里的「卡片音频截取」 */
+.cardcut{
+  margin-top:14px;padding-top:13px;border-top:1px dashed var(--line);
 }
-.segquick button{font-size:12px;padding:6px 11px}
+.cardcut-hd{
+  display:flex;justify-content:space-between;align-items:baseline;
+  font-size:12px;color:var(--fg-4);letter-spacing:.3px;margin-bottom:9px;
+}
+.cardcut-t{font-variant-numeric:tabular-nums;color:var(--brand)}
+
+.cc-range{padding:9px 2px;cursor:pointer}
+.cc-track{
+  position:relative;height:6px;border-radius:3px;
+  background:color-mix(in srgb,var(--surface) 75%,transparent);
+  border:1px solid var(--line);
+}
+.cc-sel{
+  position:absolute;top:0;bottom:0;border-radius:3px;
+  background:var(--brand);opacity:.32;
+}
+.cc-handle{
+  position:absolute;top:50%;width:14px;height:14px;margin-left:-7px;
+  margin-top:-7px;border-radius:50%;
+  background:var(--brand);border:2px solid var(--bg);
+  cursor:ew-resize;
+  transition:transform var(--fast);
+}
+.cc-handle:hover{transform:scale(1.18)}
+.cc-acts{
+  display:flex;align-items:center;gap:9px;margin-top:11px;
+}
+.cc-acts button{font-size:12px;padding:5px 10px}
+.cc-tip{font-size:11px;color:var(--fg-4);margin-left:auto}
 
 .segctx{
   margin:12px 0 16px;padding:10px 12px;border-radius:var(--r);
@@ -1379,14 +1406,24 @@ body.dragging::after{
       <div id="mFields"></div>
       <div class="mark-hint" id="mHint" style="display:none"></div>
 
-      <!-- 想标的其实是另一段？当场把句子边界改掉 -->
-      <div class="segquick">
-        <button class="ghost" id="mFixHere" title="这句分得不对？调整它的边界">
-          ✂ 这句分得不对，调整边界
-        </button>
-        <button class="ghost" id="mSplitHere" title="以当前播放位置为界，把这句切成两句">
-          ✂ 在当前位置切开
-        </button>
+      <!-- 卡片音频截取：默认整句，可拖动选择其中一段 -->
+      <div class="cardcut">
+        <div class="cardcut-hd">
+          <span>卡片音频</span>
+          <span class="cardcut-t" id="ccTime">整句</span>
+        </div>
+        <div class="cc-range" id="ccRange">
+          <div class="cc-track">
+            <div class="cc-sel" id="ccSel"></div>
+            <div class="cc-handle" id="ccA" data-h="a"></div>
+            <div class="cc-handle" id="ccB" data-h="b"></div>
+          </div>
+        </div>
+        <div class="cc-acts">
+          <button class="ghost" id="ccPlay" title="试听选中的片段">▶ 试听</button>
+          <button class="ghost" id="ccFull" title="恢复成整句">整句</button>
+          <span class="cc-tip">拖两端的小圆点，只把需要的那段做进卡片</span>
+        </div>
       </div>
 
       <div class="mark-acts" id="mActs" style="display:none">
@@ -2591,34 +2628,6 @@ $('segCancel').onclick = ()=> closeSegFix(true);
 $('segDone').onclick = ()=> closeSegFix(true);
 $('segScrim').onclick = e => { if(e.target === $('segScrim')) closeSegFix(true); };
 
-/* 标记面板里那两个快捷入口：先关掉标记面板，再打开边界面板 */
-$('mFixHere').onclick = ()=>{
-  const sid = markCtx ? markCtx.sid : S.active;
-  if(sid < 0){ toast('先选中一句话'); return; }
-  closeMark();
-  openSegFix(sid);
-};
-
-/* 以「当前播放位置」为界切开。
-   如果音频没在播/没定位，就取句子中点。 */
-$('mSplitHere').onclick = async ()=>{
-  const sid = markCtx ? markCtx.sid : S.active;
-  const s = S.segs.find(x => x.id === sid);
-  if(!s){ toast('先选中一句话'); return; }
-
-  let at = audio.currentTime;
-  // 播放位置不在本句范围内 → 用中点
-  if(!(at > s.start && at < s.end)) at = (s.start + s.end) / 2;
-
-  const r = await window.pywebview.api.split_segment(S.mat, sid, at);
-  if(!r.ok){ toast('切开失败：' + r.reason, 4000); return; }
-
-  closeMark();
-  markWasPlaying = false;
-  await openMaterial(S.mat);
-  toast('已切开，标记已跟着调整');
-};
-
 /* 试听：放这一句（或拖了切分点就放前半） */
 $('segPlay').onclick = ()=>{
   if(!segFix) return;
@@ -2701,7 +2710,113 @@ function openMark(type){
 
   $('markScrim').classList.add('show');
   setTimeout(()=>{ const i = box.querySelector('input'); if(i) i.focus(); }, 60);
+
+  // 卡片音频截取（默认整句）
+  initCardCut(s);
 }
+
+/* ============================================================
+   卡片音频截取
+   ------------------------------------------------------------
+   默认用整句音频做卡片。但有时候只需要句子里的一个片段
+   （比如只想记 "impulsive" 那半句），所以允许拖两端小圆点选取。
+   选择结果存进标记的 fields，制卡时按它切音频。
+   ============================================================ */
+let ccState = null;   // { a, b, seg }
+
+function initCardCut(seg){
+  if(!seg) return;
+  const cur = markCtx ? (S.marks[String(markCtx.sid)] || {}) : {};
+  const f = cur.fields || {};
+  // 已有标记可能存过截取范围
+  const a = typeof f.cutStart === 'number' ? f.cutStart : seg.start;
+  const b = typeof f.cutEnd   === 'number' ? f.cutEnd   : seg.end;
+  ccState = { seg, a, b };
+
+  drawCardCut();
+}
+
+function drawCardCut(){
+  if(!ccState) return;
+  const { seg, a, b } = ccState;
+  const span = seg.end - seg.start || 1;
+
+  const ra = Math.max(0, Math.min(1, (a - seg.start) / span));
+  const rb = Math.max(0, Math.min(1, (b - seg.start) / span));
+
+  $('ccSel').style.left  = (ra * 100) + '%';
+  $('ccSel').style.width = ((rb - ra) * 100) + '%';
+  $('ccA').style.left = (ra * 100) + '%';
+  $('ccB').style.left = (rb * 100) + '%';
+
+  const dur = b - a;
+  const full = Math.abs(dur - span) < 0.05;
+  const fmt = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}.`
+                 + String(Math.floor((t%1)*10));
+  $('ccTime').textContent = full
+    ? '整句 ' + dur.toFixed(1) + 's'
+    : `${fmt(a)} – ${fmt(b)}　${dur.toFixed(1)}s`;
+}
+
+/* 拖动两端 */
+(function(){
+  let dragging = null;
+  const range = $('ccRange');
+
+  function posToTime(clientX){
+    const r = range.getBoundingClientRect();
+    let p = (clientX - r.left) / r.width;
+    p = Math.max(0, Math.min(1, p));
+    const { seg } = ccState;
+    return seg.start + (seg.end - seg.start) * p;
+  }
+
+  range.addEventListener('mousedown', e=>{
+    if(!ccState) return;
+    const h = e.target.closest('.cc-handle');
+    if(h){
+      dragging = h.dataset.h;
+    } else {
+      // 点轨道中间 → 把最近的那端挪过来
+      const t = posToTime(e.clientX);
+      const mid = (ccState.a + ccState.b) / 2;
+      dragging = t < mid ? 'a' : 'b';
+    }
+    e.preventDefault();
+    onMove(e);
+  });
+
+  function onMove(e){
+    if(!dragging || !ccState) return;
+    const t = posToTime(e.clientX);
+    const MIN = 0.4;                      // 至少保留 0.4 秒
+    if(dragging === 'a'){
+      ccState.a = Math.min(t, ccState.b - MIN);
+      ccState.a = Math.max(ccState.seg.start, ccState.a);
+    } else {
+      ccState.b = Math.max(t, ccState.a + MIN);
+      ccState.b = Math.min(ccState.seg.end, ccState.b);
+    }
+    drawCardCut();
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', ()=>{
+    if(dragging){
+      dragging = null;
+      // 松手时试听一下
+      playRange(ccState.a, ccState.b);
+    }
+  });
+})();
+
+$('ccPlay').onclick = ()=>{ if(ccState) playRange(ccState.a, ccState.b); };
+$('ccFull').onclick = ()=>{
+  if(!ccState) return;
+  ccState.a = ccState.seg.start;
+  ccState.b = ccState.seg.end;
+  drawCardCut();
+};
 
 /** 打开已保存标记进行编辑（保持原类型） */
 function editMark(sid){
@@ -2767,6 +2882,20 @@ async function saveMark(){
     const el = $('mf_' + k);
     if(el) fields[k] = el.value.trim();
   }
+
+  // 卡片音频截取范围：只有真的改过（不是整句）才存，
+  // 存了之后制卡时按它切音频
+  if(ccState){
+    const seg = ccState.seg;
+    const span = seg.end - seg.start;
+    const isFull = Math.abs((ccState.b - ccState.a) - span) < 0.05
+                   && Math.abs(ccState.a - seg.start) < 0.05;
+    if(!isFull){
+      fields.cutStart = Math.round(ccState.a * 100) / 100;
+      fields.cutEnd   = Math.round(ccState.b * 100) / 100;
+    }
+  }
+
   const sid = markCtx.sid;
   const wasEdit = !!S.marks[String(sid)];
   const res = await window.pywebview.api.set_mark(S.mat, sid, markCtx.type, fields);
