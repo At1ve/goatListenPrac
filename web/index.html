@@ -465,6 +465,16 @@ body.resizing iframe,body.resizing audio{pointer-events:none}
 .mini-ctrl{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
 .mini-ctrl select{width:100%;font-size:12px;padding:5px 9px}
 
+/* 长按 ← → 变速期间：下拉框高亮，提示「现在不是档位里的速度」 */
+.mini-ctrl select.rate-temp{
+  border-color:var(--brand);
+  color:var(--brand);
+  font-weight:600;
+  background:var(--brand-dim);
+  animation:ratePulse 1.1s ease-in-out infinite;
+}
+@keyframes ratePulse{0%,100%{opacity:1}50%{opacity:.62}}
+
 /* 进度 */
 .seekrow{display:flex;align-items:center;gap:9px;margin-top:11px}
 .seekrow .t{
@@ -2353,6 +2363,92 @@ $('rate').onchange = e => {
 $('repeat').onchange = savePrefs;
 ['optPause','optAuto'].forEach(id=>{ $(id).onchange = savePrefs; });
 
+/* ============================================================
+   长按 ← / → 临时变速
+   ------------------------------------------------------------
+   按住 ← 变 0.7x（听不清的地方放慢）
+   按住 → 变 1.3x（听懂了的地方快过）
+   松手立刻回到原来的倍速。
+
+   为什么用「长按」而不是「短按」：
+   变速是**临时**动作（听一下就回去），长按松手即恢复，
+   不用去动下拉框，也不会把默认设置改掉。
+   ============================================================ */
+const HOLD_MS = 350;          // 超过这么久才算长按
+const SLOW_RATE = 0.7;
+const FAST_RATE = 1.3;
+
+let holdState = null;   // { dir, timer, active, baseRate }
+
+function holdRateStart(dir){
+  if(holdState) return;
+  holdState = {
+    dir,
+    active: false,                                  // 是否已经进入变速
+    baseRate: audio.playbackRate || S.rate || 1,    // 记下原倍速
+    timer: setTimeout(()=>{
+      if(!holdState || holdState.dir !== dir) return;
+      holdState.active = true;
+      audio.playbackRate = (dir < 0) ? SLOW_RATE : FAST_RATE;
+      syncRateUI();
+      toast(dir < 0 ? `放慢到 ${SLOW_RATE}x` : `加快到 ${FAST_RATE}x`, 1200);
+    }, HOLD_MS),
+  };
+}
+
+function holdRateEnd(){
+  if(!holdState) return;
+  clearTimeout(holdState.timer);
+  if(holdState.active){
+    // 回到原来的倍速（下拉框里选的那个）
+    audio.playbackRate = holdState.baseRate;
+    syncRateUI();
+  }
+  holdState = null;
+}
+
+/** 变速时在下拉框旁边提示一下当前实际倍速 */
+function syncRateUI(){
+  const sel = $('rate');
+  if(!sel) return;
+  const real = audio.playbackRate;
+  const picked = parseFloat(sel.value);
+  // 实际和选中的不一致 → 高亮提示（长按期间）
+  sel.classList.toggle('rate-temp', Math.abs(real - picked) > 0.01);
+  sel.title = Math.abs(real - picked) > 0.01
+    ? `长按中：${real}x（松手回到 ${picked}x）`
+    : '播放速度';
+}
+
+/* 长按的按键监听。
+   挂在 document 上，但要避开输入框和标记面板
+   （标记面板里 ← → 是调卡片音频边界的，不能抢）。 */
+document.addEventListener('keydown', e=>{
+  if(e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if(e.repeat) return;                     // 系统重复触发，忽略
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const tag = e.target.tagName;
+  if(tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if($('markScrim').classList.contains('show')) return;   // 标记面板自己处理
+  if($('cmdk').classList.contains('show')) return;
+  if(!S.segs.length) return;               // 没加载材料，不响应
+
+  e.preventDefault();
+  holdRateStart(e.key === 'ArrowLeft' ? -1 : 1);
+});
+
+document.addEventListener('keyup', e=>{
+  if(e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  holdRateEnd();
+});
+
+// 切走窗口 / 失焦时，别把倍速卡在 0.7x 上
+window.addEventListener('blur', holdRateEnd);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) holdRateEnd();
+});
+
 /**
  * ↑ / ↓ 切换句子。
  *
@@ -3818,8 +3914,8 @@ document.addEventListener('keydown', e=>{
   else if(k === 'h'){ e.preventDefault(); setBlind(!S.blind); }
   else if(k === 'arrowdown'){ e.preventDefault(); nextSeg(1); }
   else if(k === 'arrowup'){ e.preventDefault(); nextSeg(-1); }
-  else if(k === 'arrowright'){ e.preventDefault(); audio.currentTime += 3; }
-  else if(k === 'arrowleft'){ e.preventDefault(); audio.currentTime -= 3; }
+  // ← → 已经改成长按变速（见 holdRateStart），不再做快退/快进。
+  //   这里不拦截 keydown，让 keydown/keyup 成对走长按逻辑。
   else if(k === 't'){ e.preventDefault(); setTrans(!S.showTrans); }
   else if(k === 'c'){ e.preventDefault();
     const s = S.segs.find(x=>x.id===S.active); if(s) copyText(s.text); }
