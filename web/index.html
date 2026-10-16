@@ -1071,10 +1071,16 @@ button.danger:hover:not(:disabled){filter:brightness(1.1)}
   margin:10px 0 12px;line-height:2.05;
   font-size:13.5px;color:var(--fg-3);
   user-select:none;
+  /* 词多了就在面板内换行，不要横向溢出 */
+  white-space:normal;
+  word-break:normal;
+  overflow-wrap:anywhere;
+  max-height:150px;overflow-y:auto;
 }
 .cc-w{
   cursor:pointer;padding:2px 3px;border-radius:3px;
   transition:background var(--fast),color var(--fast);
+  display:inline;
 }
 .cc-w:hover{background:var(--brand-dim);color:var(--brand)}
 .cc-w.on{
@@ -2904,6 +2910,12 @@ function renderCardWords(){
     if(mid >= a - 0.01 && mid <= b + 0.01) sp.classList.add('on');
 
     box.appendChild(sp);
+
+    // 词与词之间补一个空格 —— 少了它，浏览器会把这一串 span
+    // 当成一个超长单词，不在任何地方换行，整行直接溢出面板。
+    if(i < words.length - 1){
+      box.appendChild(document.createTextNode(' '));
+    }
   });
 }
 
