@@ -2313,7 +2313,8 @@ audio.addEventListener('ended', ()=>{
   }
   $('btnPlay').textContent = '▶';
   // 连播优先：开了自动下一句就直接进下一句
-  if(autoNextOn()) nextSeg(1);
+  // forcePlay=true：播完那刻 paused 已是 true，不能靠它判断要不要接着播
+  if(autoNextOn()) nextSeg(1, true);
 });
 
 /* 句尾自动暂停（仅在未开连播时生效） */
@@ -2349,40 +2350,56 @@ $('repeat').onchange = savePrefs;
 /**
  * ↑ / ↓ 切换句子。
  *
- * 关键：如果音频正在播，必须**同时把音频挪到新句子并暂停**，
- * 否则播放中的 timeupdate 会把 active 拽回音频所在的句子 ——
- * 表现就是「按了上下键，又被强行拉回去」。
+ * 这条路径要同时满足三件事：
  *
- * 行为：
- *   正在播 → 跳到新句子的开头并暂停（你按方向键多半是想换一句听）
- *   已暂停 → 只移动选中，不动播放位置
+ *  1. 切换后**保持原来的播放状态**
+ *     正在播 → 接着播新句子；本来暂停 → 保持暂停。
+ *     （以前不管什么状态都强制暂停，听着听着按一下 ↓ 就断了，很别扭）
+ *
+ *  2. 切换后按空格，播的必须是**当前这一句**
+ *     所以播放头一定要挪到新句开头，不能留在旧位置。
+ *     （以前只有「正在播」时才挪，暂停状态下按 ↓ 再按空格，
+ *       播的还是上一句 —— 就是「空格播放其他分句」的原因）
+ *
+ *  3. active 不能被 timeupdate 抢回去
+ *     挪播放头之后 400ms 内不让 timeupdate 改 active，
+ *     否则刚切过去就被音频位置拽回原来那句。
+ *
+ * forcePlay：调用方明确要求播（连播的「自动下一句」用）。
+ *            不能只看 audio.paused —— 播完那一刻 paused 也是 true，
+ *            照那个判断连播会在第一句结束时就停住。
  */
 let _noFollowUntil = 0;    // 这段时间内不让 timeupdate 抢 active
 
-function nextSeg(dir){
+function nextSeg(dir, forcePlay){
   if(!S.view.length) return;
   let i = S.view.findIndex(x=>x.id === S.active);
   if(i < 0) i = dir > 0 ? -1 : S.view.length;
   i = Math.max(0, Math.min(S.view.length-1, i + dir));
   const seg = S.view[i];
 
+  // 先记住当前是不是在播（要在动音频之前取）
   const wasPlaying = !audio.paused;
-  if(wasPlaying){
-    audio.pause();
-    _rangeEnd = null;
-    // 把播放头也挪过去，这样再按空格就从这句开始
-    try{ audio.currentTime = seg.start; }catch(e){}
-    savePosition();
-  }
+
+  // 不管什么状态，播放头都挪到新句子开头 ——
+  // 这样紧接着按空格一定是从这一句开始播
+  _rangeEnd = null;
+  try{ audio.currentTime = seg.start; }catch(e){}
+
   // 刚手动切句，短时间内别让 timeupdate 把 active 抢回去
   _noFollowUntil = performance.now() + 400;
 
   S.active = seg.id;
-  // 键盘切换时应该滚到可见（是用户主动选的），
-  // 所以临时借用 follow 的滚动逻辑，不依赖「跟随」开关
   scrollActiveIntoView();
   markActive(false);
   updateNow(seg);
+  savePosition();
+
+  // 原来在播 → 接着播这一句（保持听感连续）
+  // 原来暂停 → 就停在句首，等你按空格
+  if(wasPlaying || forcePlay){
+    audio.play().catch(()=>{});
+  }
 }
 
 /** 把当前句滚到可视区（用户主动操作时用，不受「跟随」开关限制）*/
